@@ -1,0 +1,1 @@
+export PYTHONPATH=/home/yueyulin/github/CosyVoice/:/home/yueyulin/github/RWKVTTS/
