@@ -333,6 +333,10 @@ def main():
         for batch_idx,batch in enumerate(dataloader):
             if is_main_process:
                 logger.debug(f'batch_idx: {batch_idx} batch: {batch}')
+            skip = batch['skip']
+            if skip:
+                continue
+            batch.pop('skip')
             output = train_step(model_engine,batch)
             loss = output['loss']
             acc = output['acc']
@@ -341,7 +345,7 @@ def main():
             model_engine.backward(loss)
             model_engine.step()
             if batch_idx % args.save_steps == 0 and batch_idx > 0:
-                if (args.ds_stage != 3 and is_main_process) or (args.ds_stage == 3):
+                if args.ds_stage == 3 or args.ds_stage == 2:
                     save_checkpoint(model_engine, args.output_dir, epoch, batch_idx,logger)
             # 累计统计
             if is_main_process:
@@ -373,7 +377,8 @@ def main():
                     'avg_acc': avg_acc
                 })
         #save checkpoint at the end of each epoch
-        if (args.ds_stage != 3 and is_main_process) or (args.ds_stage == 3):
+        # if (args.ds_stage != 3 and is_main_process) or (args.ds_stage == 3):
+        if  args.ds_stage == 3 or args.ds_stage == 2:
             epoch_checkpoint_dir = f"{args.output_dir}/epoch_{epoch}"
             if not os.path.exists(epoch_checkpoint_dir):
                 os.makedirs(epoch_checkpoint_dir)

@@ -18,7 +18,7 @@ def load_jsonl_dataset(directory,tokenizer):
     # dataset = dataset.map(lambda x: {'text_tokens': tokenizer.encode(x['text']), 'prompt_text_tokens': tokenizer.encode(x['prompt_text'])},remove_columns=['text','prompt_text'])
     return dataset
 
-def collate_fn(batch,tokenizer):
+def collate_fn(batch,tokenizer,pad_to_max_length=True,max_length=2048):
     '''
     convert the data to torch tensors
     1. call tokenizer.encode('text') and tokenizer.encode('prompt_text'), concatenate them to get the text_token, record each sample's length to text_token_len
@@ -31,6 +31,7 @@ def collate_fn(batch,tokenizer):
     speech_tokens = []
     speech_token_len = []
     text_token_len = []
+    my_max_length = 0
     for sample in batch:
         text_tokens = tokenizer.encode(sample['text'])
         prompt_text_tokens = tokenizer.encode(sample['prompt_text'])
@@ -39,9 +40,22 @@ def collate_fn(batch,tokenizer):
         text_token_len.append(len(all_tokens))
         speech_tokens.append(torch.tensor(sample['speech_token'],dtype=torch.int32))
         speech_token_len.append(len(sample['speech_token']))
+        total_length = len(all_tokens) + len(sample['speech_token'])
+        if total_length > my_max_length:
+            my_max_length = total_length
+    if my_max_length > max_length:
+        skip = True#skip this sample
+    else:
+        skip = False
+    
     all_text_tokens = torch.nn.utils.rnn.pad_sequence(all_text_tokens,batch_first=True,padding_value=0)
     speech_tokens = torch.nn.utils.rnn.pad_sequence(speech_tokens,batch_first=True,padding_value=0)
-    return {'text_token': all_text_tokens, 'text_token_len': torch.tensor(text_token_len,dtype=torch.int32), 'speech_token': speech_tokens, 'speech_token_len': torch.tensor(speech_token_len,dtype=torch.int32)}
+    #pad pad_length to the speech_tokens
+    if pad_to_max_length:
+        pad_length =max_length - my_max_length
+        if pad_length > 0:
+            speech_tokens = torch.nn.functional.pad(speech_tokens,(0,pad_length),value=0)
+    return {'text_token': all_text_tokens, 'text_token_len': torch.tensor(text_token_len,dtype=torch.int32), 'speech_token': speech_tokens, 'speech_token_len': torch.tensor(speech_token_len,dtype=torch.int32),'skip':skip}
         
         
 if __name__ == '__main__':
