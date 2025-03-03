@@ -127,7 +127,7 @@ def setup_logging(local_rank):
         logging.basicConfig(
             format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
             datefmt="%m/%d/%Y %H:%M:%S",
-            level=logging.INFO,
+            level=logging.INFO if 'LOG_LEVEL' not in os.environ else os.environ['LOG_LEVEL'],
         )
 
 def configure_optimizer(model, args):
@@ -216,7 +216,7 @@ def main():
         seed=args.seed
     )
     
-    data_collator = partial(collate_fn,tokenizer=tokenizer)
+    data_collator = partial(collate_fn,tokenizer=tokenizer,max_length=args.max_length,pad_to_max_length=False)
     dataloader = DataLoader(
         dataset,
         batch_size=args.per_device_train_batch_size,
@@ -332,10 +332,17 @@ def main():
         
         for batch_idx,batch in enumerate(dataloader):
             if is_main_process:
-                logger.debug(f'batch_idx: {batch_idx} batch: {batch}')
+                speech_token_shape = batch['speech_token'].shape
+                text_token_shape = batch['text_token'].shape
+                logger.debug(f'speech_token_shape: {speech_token_shape} text_token_shape: {text_token_shape} at batch_idx: {batch_idx}')
             skip = batch['skip']
             if skip:
-                continue
+                all_length = batch['text_token'].shape[1] + batch['speech_token'].shape[1]
+                if all_length > args.max_length:
+                    #truncate the sppech_token first
+                    truncated_length = args.max_length - batch['speech_token'].shape[1]
+                    speech_token = batch['speech_token']
+                    batch['speech_token'] = speech_token[:,:truncated_length]
             batch.pop('skip')
             output = train_step(model_engine,batch)
             loss = output['loss']

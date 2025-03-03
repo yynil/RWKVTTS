@@ -67,7 +67,7 @@ if __name__ == '__main__':
     print(dataset)
     print(dataset[0])
     from functools import partial
-    collate_fn = partial(collate_fn,tokenizer=tokenizer)
+    collate_fn = partial(collate_fn,tokenizer=tokenizer,pad_to_max_length=False)
     dataloader = torch.utils.data.DataLoader(dataset,batch_size=2,collate_fn=collate_fn)
     for data in dataloader:
         print(data)
