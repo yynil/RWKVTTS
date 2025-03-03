@@ -28,18 +28,34 @@ def init_process(model_dir,device):
 
 def preprocess_prompts(frontend,prompts_dir):
     language_results = {}
-    #iterator all json file in prompts_dir, extract the json contents, get the language from the json. load the wav file and preprocess it
-    #put the (text,wav) into language_results
     final_rate = 24000
     for root, dirs, files in os.walk(prompts_dir):
         for file in files:
             if file.endswith('.json'):
                 json_file = os.path.join(root, file)
+                print(f"处理文件 {json_file}")
                 language = json_file.split('/')[-2]
                 if language not in language_results:
                     language_results[language] = []
-                with open(json_file, 'r') as f:
-                    json_data = json.load(f)
+                
+                # 尝试不同的编码格式读取文件
+                try:
+                    with open(json_file, 'r', encoding='utf-8') as f:
+                        json_data = json.load(f)
+                except UnicodeDecodeError:
+                    try:
+                        # 尝试 GB2312/GBK 编码 (常用于中文)
+                        with open(json_file, 'r', encoding='gbk') as f:
+                            json_data = json.load(f)
+                    except UnicodeDecodeError:
+                        try:
+                            # 尝试 GB18030 编码 (扩展的中文编码)
+                            with open(json_file, 'r', encoding='gb18030') as f:
+                                json_data = json.load(f)
+                        except Exception as e:
+                            print(f"无法读取文件 {json_file}: {e}")
+                            continue
+                
                 wav_file = json_file.replace('.json', '.wav')
                 prompt_text = json_data['text']
                 prompt_speech = torchaudio.load(wav_file, backend='soundfile')[0]
