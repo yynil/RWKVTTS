@@ -1,6 +1,7 @@
 from ast import mod
 from calendar import c
 import os
+from turtle import up
 import torch
 # import torch._dynamo
 # torch._dynamo.config.suppress_errors = True
@@ -50,6 +51,10 @@ class ScriptArguments:
     learning_rate: float = field(
         default=1e-5,
         metadata={"help": "Learning rate"}
+    )
+    learning_rate_final: float = field(
+        default=1e-6,
+        metadata={"help": "Final learning rate at the end of training"}
     )
     weight_decay: float = field(
         default=0.01,
@@ -144,10 +149,10 @@ def configure_optimizer(model, args):
 
     if args.ds_optimizer_offload:
         from deepspeed.ops.adam import DeepSpeedCPUAdam
-        optimizer = DeepSpeedCPUAdam(optim_groups, lr=args.learning_rate, betas=(0.9, 0.999),  bias_correction=True, adamw_mode=True, amsgrad=False)
+        optimizer = DeepSpeedCPUAdam(optim_groups, lr=args.learning_rate, betas=(0.9, 0.95), eps=1e-18, bias_correction=True, adamw_mode=True, amsgrad=False,weight_decay=args.weight_decay)
     else:
         from deepspeed.ops.adam import FusedAdam
-        optimizer = FusedAdam(optim_groups, lr=args.learning_rate, betas=(0.9, 0.999), eps=1e-8, bias_correction=True, adam_w_mode=True, amsgrad=False)
+        optimizer = FusedAdam(optim_groups, lr=args.learning_rate, betas=(0.9, 0.95), eps=1e-18, bias_correction=True, adam_w_mode=True, amsgrad=False, weight_decay=args.weight_decay)
   
     return optimizer
 
@@ -170,7 +175,20 @@ def save_checkpoint(model_engine, output_dir, epoch, step,logger):
         os.makedirs(output_dir)
     
     model_engine.save_checkpoint(output_dir)
-
+def get_lr_scheduler(optimizer, total_steps, warmup_steps, learning_rate, learning_rate_final):
+    """Create a linear learning rate scheduler that goes from learning_rate to learning_rate_final"""
+    from transformers import get_linear_schedule_with_warmup
+    
+    def lr_lambda(current_step):
+        if current_step < warmup_steps:
+            # 在预热阶段，从0线性增加到learning_rate
+            return float(current_step) / float(max(1, warmup_steps))
+        else:
+            # 预热后，从learning_rate线性减少到learning_rate_final
+            progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+            return max(learning_rate_final / learning_rate, 1.0 - progress * (1.0 - learning_rate_final / learning_rate))
+    
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 def main():
     # Parse arguments
     parser = HfArgumentParser(ScriptArguments)
@@ -216,7 +234,7 @@ def main():
         seed=args.seed
     )
     
-    data_collator = partial(collate_fn,tokenizer=tokenizer,max_length=args.max_length,pad_to_max_length=False)
+    data_collator = partial(collate_fn,tokenizer=tokenizer,max_length=args.max_length,pad_to_max_length=True)
     dataloader = DataLoader(
         dataset,
         batch_size=args.per_device_train_batch_size,
@@ -299,11 +317,24 @@ def main():
         del model_ds_config["zero_optimization"]["offload_param"]
     if not args.ds_optimizer_offload:
         del model_ds_config["zero_optimization"]["offload_optimizer"]
+        
+    # 在初始化DeepSpeed之前计算总步数
+    total_steps = len(dataloader) * args.num_epochs
+    
+    # 创建自定义的学习率调度器
+    lr_scheduler = get_lr_scheduler(
+        optimizer, 
+        total_steps,
+        args.warmup_steps,
+        args.learning_rate,
+        args.learning_rate_final
+    )
     model_engine, optimizer, _, scheduler = deepspeed.initialize(
             model=model,
             config=model_ds_config,
             model_parameters=model.parameters(),
-            optimizer=optimizer
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler
     )
     if is_main_process:
         logger.info("Model initialized")
@@ -323,8 +354,10 @@ def main():
     total_loss = 0.0
     total_steps = 0
     total_acc = 0.0
+    all_tokens = 0
     for epoch in range(args.num_epochs):
         if is_main_process:
+            update_time = time.time()
             logger.info(f"Epoch {epoch} starts training")
         # 使用时间戳生成随机种子
         time_seed = int(time.time() * 1000) & 0xffffffff  # 获取毫秒级时间戳并转换为32位整数
@@ -356,6 +389,7 @@ def main():
                     save_checkpoint(model_engine, args.output_dir, epoch, batch_idx,logger)
             # 累计统计
             if is_main_process:
+                elapsed_time = time.time()-update_time
                 total_loss += loss.item()
                 total_acc += acc.item()
                 total_steps += 1
@@ -364,7 +398,10 @@ def main():
                 avg_loss = total_loss / total_steps
                 avg_acc = total_acc / total_steps
                 tokens = (batch['speech_token'].shape[1]+batch['text_token'].shape[1])*args.per_device_train_batch_size*world_size
+                all_tokens += tokens
+                kts = tokens / elapsed_time / 1e3
                 # 记录到wandb
+                current_lr = optimizer.param_groups[0]['lr']
                 wandb.log({
                     "loss": loss.item(),
                     "avg_loss": avg_loss,
@@ -372,8 +409,9 @@ def main():
                     "step": total_steps,
                     "acc": acc.item(),
                     "avg_acc": avg_acc,
-                    "tokens": tokens,
-                    "Gtokens": tokens/1e9
+                    "KT/s": kts,
+                    "Gtokens": all_tokens/1e9,
+                    "learning_rate": current_lr
                 })
                 
                 pbar.update(1)
@@ -381,7 +419,8 @@ def main():
                     'loss': loss.item(),
                     'avg_loss': avg_loss,
                     'acc': acc.item(),
-                    'avg_acc': avg_acc
+                    'avg_acc': avg_acc,
+                    'lr': current_lr
                 })
         #save checkpoint at the end of each epoch
         # if (args.ds_stage != 3 and is_main_process) or (args.ds_stage == 3):

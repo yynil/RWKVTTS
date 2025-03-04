@@ -35,7 +35,7 @@ def collate_fn(batch,tokenizer,pad_to_max_length=True,max_length=2048):
     for sample in batch:
         text_tokens = tokenizer.encode(sample['text'])
         prompt_text_tokens = tokenizer.encode(sample['prompt_text'])
-        all_tokens = text_tokens + prompt_text_tokens
+        all_tokens = prompt_text_tokens + text_tokens
         all_text_tokens.append(torch.tensor(all_tokens,dtype=torch.int32))
         text_token_len.append(len(all_tokens))
         speech_tokens.append(torch.tensor(sample['speech_token'],dtype=torch.int32))
@@ -68,7 +68,7 @@ if __name__ == '__main__':
     print(dataset[0])
     from functools import partial
     collate_fn = partial(collate_fn,tokenizer=tokenizer,pad_to_max_length=False)
-    dataloader = torch.utils.data.DataLoader(dataset,batch_size=2,collate_fn=collate_fn)
+    dataloader = torch.utils.data.DataLoader(dataset,batch_size=1,collate_fn=collate_fn)
     for data in dataloader:
         print(data)
         print(data['speech_token'].shape)

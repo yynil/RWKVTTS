@@ -14,6 +14,7 @@ import multiprocessing
 import torch
 from data.cosy.data.data_processor import init_process, preprocess_prompts
 import random
+
 def load_file_list(tar_file):
     #the files are FILE_NAME.mp3/FILE_NAME.json
     #return all FILE_NAME as a list which has a mp3 and json
