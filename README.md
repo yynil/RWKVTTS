@@ -156,3 +156,25 @@ tts text: "收到好友从远方寄来的生日礼物，那份意外的惊喜与
 
 tts audio: 
 [tts audio](zero_shot_0.wav)
+
+
+
+### TODO:
+0. Drop prompt audio tokens randomly to simulate unconditional guided generation.
+1. Add special control tokens in Cosy 2.0 in RWKV tokenizer and add them to generate audio tokens again:
+```python
+        special_tokens = {
+            'eos_token': '<|endoftext|>',
+            'pad_token': '<|endoftext|>',
+            'additional_special_tokens': [
+                '<|im_start|>', '<|im_end|>', '<|endofprompt|>',
+                '[breath]', '<strong>', '</strong>', '[noise]',
+                '[laughter]', '[cough]', '[clucking]', '[accent]',
+                '[quick_breath]',
+                "<laughter>", "</laughter>",
+                "[hissing]", "[sigh]", "[vocalized-noise]",
+                "[lipsmack]", "[mn]"
+            ]
+        }
+```
+2. Implement streaming generation for Cosy 2.0 in RWKV7LM.

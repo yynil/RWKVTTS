@@ -2,6 +2,9 @@ import datasets
 import os
 import json
 import torch
+import random
+import time
+random.seed(time.time())
 def load_jsonl_dataset(directory,tokenizer):
     '''
     load jsonl files in a directory recursively
@@ -26,13 +29,14 @@ def load_jsonl_dataset(directory,tokenizer):
     # dataset = dataset.map(lambda x: {'text_tokens': tokenizer.encode(x['text']), 'prompt_text_tokens': tokenizer.encode(x['prompt_text'])},remove_columns=['text','prompt_text'])
     return dataset
 
-def collate_fn(batch,tokenizer,pad_to_max_length=True,max_length=2048):
+def collate_fn(batch,tokenizer,pad_to_max_length=True,max_length=2048,drop_prompt_audio_rate=0.1):
     '''
     convert the data to torch tensors
     1. call tokenizer.encode('text') and tokenizer.encode('prompt_text'), concatenate them to get the text_token, record each sample's length to text_token_len
     2. convert the text_tokens and text_token_len to torch tensor
     3. record each sample's speech_token length to speech_token_len
     4. convert the speech_token and speech_token_len to torch tensor
+    5. We will drop prompt with drop_prompt_audio_rate to ask model to learn generate audio without guaidance
     '''
     all_text_tokens = []
     prompt_text_tokens = []
@@ -40,15 +44,24 @@ def collate_fn(batch,tokenizer,pad_to_max_length=True,max_length=2048):
     speech_token_len = []
     text_token_len = []
     my_max_length = 0
+    is_drop_prompt = random.random() < drop_prompt_audio_rate
     for sample in batch:
-        text_tokens = tokenizer.encode(sample['text'])
-        prompt_text_tokens = tokenizer.encode(sample['prompt_text'])
-        all_tokens = prompt_text_tokens + text_tokens
-        all_text_tokens.append(torch.tensor(all_tokens,dtype=torch.int32))
-        text_token_len.append(len(all_tokens))
-        speech_tokens.append(torch.tensor(sample['speech_token'],dtype=torch.int32))
-        speech_token_len.append(len(sample['speech_token']))
-        total_length = len(all_tokens) + len(sample['speech_token'])
+        if is_drop_prompt:
+            text_tokens = tokenizer.encode(sample['text'])
+            all_text_tokens.append(torch.tensor(text_tokens,dtype=torch.int32))
+            text_token_len.append(len(text_tokens))
+            speech_tokens.append(torch.tensor(sample['speech_token'],dtype=torch.int32))
+            speech_token_len.append(len(sample['speech_token']))
+            total_length = len(text_tokens) + len(sample['speech_token'])
+        else:
+            text_tokens = tokenizer.encode(sample['text'])
+            prompt_text_tokens = tokenizer.encode(sample['prompt_text'])
+            all_tokens = prompt_text_tokens + text_tokens
+            all_text_tokens.append(torch.tensor(all_tokens,dtype=torch.int32))
+            text_token_len.append(len(all_tokens))
+            speech_tokens.append(torch.tensor(sample['speech_token'],dtype=torch.int32))
+            speech_token_len.append(len(sample['speech_token']))
+            total_length = len(all_tokens) + len(sample['speech_token'])
         if total_length > my_max_length:
             my_max_length = total_length
     if my_max_length > max_length:
