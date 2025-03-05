@@ -19,12 +19,12 @@ if __name__ == '__main__':
     prompt_audios = [
         '/home/yueyulin/github/RWKVTTS/zero_shot_prompt.wav',
         '/home/yueyulin/github/RWKVTTS/mine.wav',
-        '/home/yueyulin/github/RWKVTTS/another.wav'
+        '/home/yueyulin/github/RWKVTTS/new.wav'
     ]
     prompt_texts = [
         '希望你以后做的比我还好呦。',
-        '今天天气挺不错的。',
-        '我家里有三只狗。'
+        '少年强则中国强。',
+        '我随便说一句话，我喊开始录就开始录。'
     ]
     import logging
     tts_text = '中国在东亚，是世界上最大的国家，也是世界上人口最多的国家。'
