@@ -382,8 +382,37 @@ def main():
             acc = output['acc']
             if is_main_process:
                 logger.debug(f'loss: {loss} acc: {acc}')
-            model_engine.backward(loss)
-            model_engine.step()
+                
+            # 首先检测 NaN
+            is_nan_loss = torch.isnan(loss) or torch.isinf(loss)
+            # 确保所有进程获得相同的 is_nan_loss 值
+            is_nan_loss_tensor = torch.tensor([1.0 if is_nan_loss else 0.0], device=model_engine.device)
+            # 所有进程同步这个张量以获取一致决策
+            torch.distributed.all_reduce(is_nan_loss_tensor, op=torch.distributed.ReduceOp.MAX)
+            is_nan_loss = bool(is_nan_loss_tensor.item())
+
+            if is_nan_loss:
+                # 使用一个安全的替代 loss 进行 backward
+                # 这个 loss 不会影响模型（乘以0），但会确保所有节点都执行 backward
+                logger.info(f"NaN loss detected at batch {batch_idx}, using safe zero loss instead")
+                logger.info(f'batch data is {batch}')
+                safe_loss = loss * 0.0 
+                if is_main_process:
+                    logger.warning(f"NaN loss detected at batch {batch_idx}, using safe zero loss instead")
+                    wandb.log({
+                        "nan_detected": 1,
+                        "epoch": epoch,
+                        "step": total_steps
+                    })
+                
+                # 所有节点都执行 backward，但使用的是零梯度
+                model_engine.backward(safe_loss)
+                model_engine.step()  # 这步实际上不会改变参数，因为梯度是零
+            else:
+                # 正常情况，使用实际 loss
+                model_engine.backward(loss)
+                model_engine.step()
+                
             if batch_idx % args.save_steps == 0 and batch_idx > 0:
                 if args.ds_stage == 3 or args.ds_stage == 2:
                     save_checkpoint(model_engine, args.output_dir, epoch, batch_idx,logger)

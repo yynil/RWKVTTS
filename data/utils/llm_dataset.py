@@ -14,6 +14,14 @@ def load_jsonl_dataset(directory,tokenizer):
     dataset = datasets.load_dataset('json', data_files=data_files)['train']
     #1. concatenate llm_prompt_speech_token and tts_speech_tokens (list of int)
     dataset = dataset.map(lambda x: {'speech_token': x['llm_prompt_speech_token'] + x['tts_speech_tokens']},remove_columns=['tts_speech_tokens','llm_prompt_speech_token'])
+    #2. Filter the data either :
+    #   1. the length of the speech_token is less than 1
+    #   2. the length of the speech_token is greater than 1000
+    #   3. the length of the text is greater than 500
+    #   4. the length of the prompt_text is greater than 500
+    #   5. the length of the text_token is less than 1
+    #   6. the length of the prompt_text_token is less than 1
+    dataset = dataset.filter(lambda x: len(x['speech_token']) > 1 and len(x['speech_token']) < 1000 and len(tokenizer.encode(x['text'])) < 500 and len(tokenizer.encode(x['prompt_text'])) < 500 and len(tokenizer.encode(x['text'])) > 1 and len(tokenizer.encode(x['prompt_text'])) > 1)
     #2. tokenize the text to text_tokens and prompt_text to prompt_text_tokens
     # dataset = dataset.map(lambda x: {'text_tokens': tokenizer.encode(x['text']), 'prompt_text_tokens': tokenizer.encode(x['prompt_text'])},remove_columns=['text','prompt_text'])
     return dataset
