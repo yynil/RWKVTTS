@@ -140,3 +140,17 @@ We use Deepspeed to train the model:
 deepspeed --num_nodes 1 --num_gpus 4 train_scripts/train_llm.py --data_file /external_data/yueyudata/speech_corpus/ --model_name /external_data/models/rwkv7-1.5B-world/ --output_dir /external_data/yueyudata/cosy_voice_llm --max_length 2048 --wandb_project toy_cosy_llm --wandb_run_name server2_rwkv_7_1.5B --ds_param_offload True --ds_optimizer_offload True --ds_stage 2 --gradient_checkpointing True --logging_steps 10 --per_device_train_batch_size 8
 ```
 The base model can be downloaded from https://huggingface.co/collections/fla-hub/rwkv7-6790fd37b4b6137b088a0d8a , just choose a proper model for your training.
+
+
+### Cosy 2.0 LLM Inference
+
+### Some samples 
+
+#### Zero shot inference
+prompt audio :[audio](mine.wav)
+
+prompt text: "今天天气挺不错的。"
+
+tts text: "收到好友从远方寄来的生日礼物，那份意外的惊喜与深深的祝福让我心中充满了甜蜜的快乐，笑容如花儿般绽放。"
+
+tts audio: [tts_audio](zero_shot_0.wav)
