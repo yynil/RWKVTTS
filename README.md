@@ -150,6 +150,7 @@ The base model can be downloaded from https://huggingface.co/collections/fla-hub
 prompt audio :
 <audio controls>
   <source src="mine.wav" type="audio/wav">
+  您的浏览器不支持音频播放元素。
 </audio>
 
 prompt text: "今天天气挺不错的。"
@@ -159,4 +160,5 @@ tts text: "收到好友从远方寄来的生日礼物，那份意外的惊喜与
 tts audio: 
 <audio controls>
   <source src="zero_shot_0.wav" type="audio/wav">
+  您的浏览器不支持音频播放元素。
 </audio>
