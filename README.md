@@ -147,10 +147,16 @@ The base model can be downloaded from https://huggingface.co/collections/fla-hub
 ### Some samples 
 
 #### Zero shot inference
-prompt audio :[audio](mine.wav)
+prompt audio :
+<audio controls>
+  <source src="mine.wav" type="audio/wav">
+</audio>
 
 prompt text: "今天天气挺不错的。"
 
 tts text: "收到好友从远方寄来的生日礼物，那份意外的惊喜与深深的祝福让我心中充满了甜蜜的快乐，笑容如花儿般绽放。"
 
-tts audio: [tts_audio](zero_shot_0.wav)
+tts audio: 
+<audio controls>
+  <source src="zero_shot_0.wav" type="audio/wav">
+</audio>
