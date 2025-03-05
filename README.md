@@ -177,4 +177,5 @@ tts audio:
             ]
         }
 ```
-2. Implement streaming generation for Cosy 2.0 in RWKV7LM.
+2. Add special control tokens like dialects in RWKV7LM and generate audio tokens for training.
+3. Implement streaming generation for Cosy 2.0 in RWKV7LM.

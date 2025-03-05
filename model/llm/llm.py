@@ -118,6 +118,17 @@ class RWKV7LM(nn.Module):
         acc = th_accuracy(logits.view(-1, self.speech_token_size + 1), lm_target, ignore_label=IGNORE_ID)
         return {'loss': loss, 'acc': acc}
     
+    def dummy_forward(self):
+        print(f'start to do dummy forward')
+        with torch.no_grad():
+            with torch.amp.autocast(enabled=True,device_type='cuda'):
+                xs = torch.ones(1, 1, self.llm_input_size,device=self.llm.model.device,dtype=torch.float)
+                print(f'xs is {xs.dtype}')
+                masks = torch.ones(1, 1, 1,device=self.llm.model.device,dtype=torch.long)
+                cache = None
+                self.forward_one_step(xs, masks, cache)
+        print(f'finish dummy forward')
+    
     def forward_one_step(self, xs, masks, cache=None):
         input_masks = masks[:, -1, :]
         outs = self.llm.model(

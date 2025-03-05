@@ -234,7 +234,7 @@ def main():
         seed=args.seed
     )
     
-    data_collator = partial(collate_fn,tokenizer=tokenizer,max_length=args.max_length,pad_to_max_length=True)
+    data_collator = partial(collate_fn,tokenizer=tokenizer,max_length=args.max_length,pad_to_max_length=False)
     dataloader = DataLoader(
         dataset,
         batch_size=args.per_device_train_batch_size,
