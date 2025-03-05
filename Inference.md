@@ -34,13 +34,7 @@ if __name__ == '__main__':
     
     from cosyvoice.utils.file_utils import load_wav
     import torchaudio
-    prompt_audio_file = '/home/yueyulin/github/RWKVTTS/zero_shot_prompt.wav'
-    prompt_audio_file = '/home/yueyulin/github/RWKVTTS/mine.wav'
-    prompt_audio_file = '/home/yueyulin/github/RWKVTTS/another.wav'
-    prompt_speech_16k = load_wav(prompt_audio_file, 16000)
-    prompt_text = '希望你以后做的比我还好呦。'
-    prompt_text = '今天天气挺不错的。'
-    prompt_text = '我家里有三只狗。'
+    
     cosyvoice.model.llm.dummy_forward()
     print('Finished warmup')
     prompt_audios = [
