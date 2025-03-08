@@ -126,6 +126,11 @@ class ScriptArguments:
         metadata={"help": "speech token size"}
     )
     
+    drop_out: float = field(
+        default=0.02,
+        metadata={"help": "drop out"}
+    )
+    
 def setup_logging(local_rank):
     """Configure logging"""
     if local_rank <= 0:
@@ -234,7 +239,7 @@ def main():
         seed=args.seed
     )
     
-    data_collator = partial(collate_fn,tokenizer=tokenizer,max_length=args.max_length,pad_to_max_length=False)
+    data_collator = partial(collate_fn,tokenizer=tokenizer,max_length=args.max_length,pad_to_max_length=False,drop_prompt_audio_rate=0.5)
     dataloader = DataLoader(
         dataset,
         batch_size=args.per_device_train_batch_size,
