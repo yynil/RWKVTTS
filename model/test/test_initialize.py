@@ -14,8 +14,11 @@ def do_tts(tts_text,prompt_texts,cosyvoice):
 if __name__ == '__main__':
     from cosyvoice.cli.cosyvoice import CosyVoice2
     import torch
-    model_path = '/home/yueyulin/models/CosyVoice2-0.5B_RWKV_0.19B/'
-    device = 'cuda:0'
+    import sys
+    # model_path = '/home/yueyulin/models/CosyVoice2-0.5B_RWKV_0.19B/'
+    # device = 'cuda:0'
+    model_path = sys.argv[1]
+    device = sys.argv[2] if len(sys.argv) > 2 else 'cuda:0'
     cosyvoice = CosyVoice2(model_path,device=device,fp16=False,load_jit=False)
     
     from cosyvoice.utils.file_utils import load_wav
