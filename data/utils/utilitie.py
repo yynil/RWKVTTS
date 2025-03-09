@@ -1,4 +1,5 @@
 from concurrent.futures import thread
+from operator import is_
 from librosa import ex
 from regex import P
 from torch import device
@@ -178,7 +179,7 @@ def process_parquet_file(parquet_file,language,process_pool):
     print(f'Processed {count} samples from {parquet_file}')
     return count
 
-def generate_speech_tokens_single_process(cosy_model_dir, prompts_dir, output_dir, language, jsonl_files=None, parquet_files=None, device="cuda:0"):
+def generate_speech_tokens_single_process(cosy_model_dir, prompts_dir, output_dir, language, jsonl_files=None, parquet_files=None, device="cuda:0",is_cross_lingual=False):
     """
     单进程单线程版本的语音标记生成函数
     """
@@ -256,8 +257,12 @@ def generate_speech_tokens_single_process(cosy_model_dir, prompts_dir, output_di
                     return 0
                 
                 random.seed(time.time())
+                cross_linguals_map = {
+                    'zh': 'en',
+                    'en': 'zh'
+                }
                 try:
-                    model_input, prompt_text = random.choice(prompts[language])
+                    model_input, prompt_text = random.choice(prompts[language if not is_cross_lingual else cross_linguals_map[language]])
                 except KeyError:
                     logger.error(f"语言 '{language}' 在提示词中不存在! 可用语言: {list(prompts.keys())}")
                     return 0
@@ -445,6 +450,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, help='cuda device used to extract speech tokens')
     parser.add_argument('--jsonl_files', nargs='+', type=str, help='jsonl files')
     parser.add_argument('--parquet_files', nargs='+', type=str, help='parquet files')
+    parser.add_argument('--is_cross_lingual', action='store_true', help='is cross lingual')
     args = parser.parse_args()
     task = args.task
     if task == 'extract_prompt':   
@@ -460,7 +466,7 @@ if __name__ == '__main__':
         jsonl_files = args.jsonl_files
         parquet_files = args.parquet_files
         device = args.device
-        
+        is_cross_lingual = args.is_cross_lingual
         # 使用单进程单线程版本替代多进程版本
         generate_speech_tokens_single_process(
             cosy_model_dir=cosy_model_dir,
@@ -469,6 +475,7 @@ if __name__ == '__main__':
             language=language,
             jsonl_files=jsonl_files,
             parquet_files=parquet_files,
-            device=device
+            device=device,
+            is_cross_lingual=is_cross_lingual
         )
 

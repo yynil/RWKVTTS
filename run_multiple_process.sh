@@ -9,6 +9,7 @@ DEVICE="cuda:0"
 PARQUET_FILES=()
 JSONL_FILES=()
 FILE_TYPE="" # 用于标记文件类型
+is_cross_lingual=""
 
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
@@ -50,6 +51,10 @@ while [[ $# -gt 0 ]]; do
     --device)
       DEVICE="$2"
       shift 2
+      ;;
+    --cross_lingual)
+      is_cross_lingual="--is_cross_lingual"
+      shift
       ;;
     *)
       echo "未知参数: $1"
@@ -102,6 +107,7 @@ for ((i=0; i<${#FILES[@]}; i++)); do
   nohup python data/utils/utilitie.py \
     --task generate_speech_tokens \
     --language $LANGUAGE \
+    $is_cross_lingual \
     $FILE_ARG "$FILE" \
     --output_dir $OUTPUT_DIR \
     --cosy_model_dir $COSY_MODEL_DIR \
