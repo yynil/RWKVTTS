@@ -17,8 +17,11 @@ if __name__ == '__main__':
     import sys
     # model_path = '/home/yueyulin/models/CosyVoice2-0.5B_RWKV_0.19B/'
     # device = 'cuda:0'
+    print(sys.argv)
     model_path = sys.argv[1]
     device = sys.argv[2] if len(sys.argv) > 2 else 'cuda:0'
+    is_flow_only = sys.argv[3]=='True' if len(sys.argv) > 3 else False
+    print(f'is_flow_only: {is_flow_only}')
     cosyvoice = CosyVoice2(model_path,device=device,fp16=False,load_jit=False)
     
     from cosyvoice.utils.file_utils import load_wav
@@ -29,16 +32,19 @@ if __name__ == '__main__':
         '/home/yueyulin/github/RWKVTTS/new.wav',
         '/home/yueyulin/github/RWKVTTS/Trump.wav',
     ]
-    prompt_texts = [
-        '希望你以后做的比我还好呦。',
-        '少年强则中国强。',
-        '我随便说一句话，我喊开始录就开始录。',
-        'numbers of Latino, African American, Asian American and native American voters.'
-    ]
-    prompt_texts = [
-        None,
-        None,
-        None,
-        None
-    ]
+    
+    if not is_flow_only:
+        prompt_texts = [
+            '希望你以后做的比我还好呦。',
+            '少年强则中国强。',
+            '我随便说一句话，我喊开始录就开始录。',
+            'numbers of Latino, African American, Asian American and native American voters.'
+        ]
+    else:
+        prompt_texts = [
+            None,
+            None,
+            None,
+            None
+        ]
     do_tts('Make America great again!',prompt_texts,cosyvoice)
