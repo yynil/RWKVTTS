@@ -483,7 +483,7 @@ def generate_speech_tokens_single_process(cosy_model_dir, prompts_dir, output_di
     logger = logging.getLogger(f'process_{process_id}')
     
     # 记录启动信息
-    logger.info(f"='='='='='='='='='='='='='='='='='='='='='='='='='='='='='")
+    logger.info(f"='='='='='='='='='='='Instructed={is_instructed}'='='='='='='='='='='='='='='='='='")
     logger.info(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"进程ID: {process_id}")
     logger.info(f"设备: {device}")
@@ -543,6 +543,10 @@ def generate_speech_tokens_single_process(cosy_model_dir, prompts_dir, output_di
                 processed_count = 0
                 for tts_text in splits_txt_by_lines:
                     try:
+                        if is_instructed:
+                            tts_text = generate_mixed_instructions(tts_text, language)
+                            prompt_text = ""
+                            llm_prompt_speech_token[0]=[]
                         # 生成语音标记
                         tts_speech_tokens = generate_speech_tokens(llm, frontend, tts_text, model_input, device)
                         output_data = {
