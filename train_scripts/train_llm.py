@@ -131,6 +131,11 @@ class ScriptArguments:
         metadata={"help": "drop out"}
     )
     
+    drop_prompt_ratio : float = field(
+        default=0.5,
+        metadata={"help": "drop prompt ratio"}
+    )
+    
 def setup_logging(local_rank):
     """Configure logging"""
     if local_rank <= 0:

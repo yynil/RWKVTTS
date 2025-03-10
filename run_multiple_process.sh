@@ -10,6 +10,7 @@ PARQUET_FILES=()
 JSONL_FILES=()
 FILE_TYPE="" # 用于标记文件类型
 is_cross_lingual=""
+is_instructed=""
 
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
@@ -54,6 +55,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --cross_lingual)
       is_cross_lingual="--is_cross_lingual"
+      shift
+      ;;
+    --instructed)
+      is_instructed="--is_instructed"
       shift
       ;;
     *)
@@ -112,6 +117,7 @@ for ((i=0; i<${#FILES[@]}; i++)); do
     --output_dir $OUTPUT_DIR \
     --cosy_model_dir $COSY_MODEL_DIR \
     --prompts_dir $PROMPTS_DIR \
+    $is_instructed \
     --device "$DEVICE" > "$OUTPUT_DIR/log_${FILENAME%.*}.log" 2>&1 &
   
   # 记录进程ID
