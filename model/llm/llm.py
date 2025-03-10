@@ -1,3 +1,4 @@
+from operator import is_
 from click import Option, prompt
 from numpy import dtype
 from pydantic import InstanceOf
@@ -12,7 +13,7 @@ from torch.nn.utils.rnn import pad_sequence, unpad_sequence
 import torch.nn.functional as F
 from cosyvoice.utils.common import th_accuracy
 from transformers import AutoModelForCausalLM, AutoTokenizer,AutoConfig
-
+import time
 class RWKV7LM(nn.Module):
     def __init__(
             self,
@@ -200,6 +201,11 @@ class RWKV7LM(nn.Module):
         # 5. step by step decode
         out_tokens = []
         cache = None
+        start_time = time.time()
+        end_time = 0
+        is_prefill = True
+        prefill_time = 0
+        prefill_length = lm_input.shape[1]
         for i in range(max_len):
             y_pred, cache = self.forward_one_step(lm_input,
                                                       masks=torch.tril(torch.ones((1, lm_input.shape[1], lm_input.shape[1]), device=lm_input.device)).to(torch.bool),
@@ -214,6 +220,14 @@ class RWKV7LM(nn.Module):
             yield top_ids
             out_tokens.append(top_ids)
             lm_input = self.speech_embedding.weight[top_ids].reshape(1, 1, -1)
+            if is_prefill:
+                prefill_time = time.time() - start_time
+                is_prefill = False
+        end_time = time.time()
+        decode_time = end_time - start_time - prefill_time
+        decoded_length = len(out_tokens)
+        print(f'tps for prefill is {prefill_length/prefill_time}. {prefill_length} tokens in {prefill_time} seconds')
+        print(f'tps for decode is {decoded_length/decode_time}. {decoded_length} tokens in {decode_time} seconds')
         print(f'out_tokens is {out_tokens}')
     
 if __name__ == '__main__':
