@@ -1,3 +1,4 @@
+#Download the evaluation file from:https://drive.google.com/file/d/1GlSjVfSHkW3-leKKBlfrjuuTGqQ_xaLP/edit
 import os
 voice_engine = None
 def init_process_func(model_path,device):
