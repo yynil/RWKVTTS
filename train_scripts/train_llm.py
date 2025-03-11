@@ -226,7 +226,19 @@ def main():
     if is_main_process:
         logger.info(f"Loading tokenizer from {args.model_name}")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name,trust_remote_code=True)
-    tokenizer.add_special_tokens({'pad_token': '<|rwkv_tokenizer_end_of_text|>'})
+    special_tokens = {
+            'pad_token': '<|rwkv_tokenizer_end_of_text|>',
+            'additional_special_tokens': [
+                '<|endofprompt|>',
+                '[breath]', '<strong>', '</strong>', '[noise]',
+                '[laughter]', '[cough]', '[clucking]', '[accent]',
+                '[quick_breath]',
+                "<laughter>", "</laughter>",
+                "[hissing]", "[sigh]", "[vocalized-noise]",
+                "[lipsmack]", "[mn]"
+            ]
+        }
+    tokenizer.add_special_tokens(special_tokens)
     
     # Load dataset
     if is_main_process:
@@ -310,7 +322,7 @@ def main():
     model.train()
     llm_input_size = model.config.hidden_size
     llm_output_size = model.config.hidden_size
-    model  = RWKV7LM(llm_input_size,llm_output_size,args.speech_token_size,model,None)
+    model  = RWKV7LM(llm_input_size,llm_output_size,args.speech_token_size,model,None,drop_ratio=args.drop_out)
     model.train()
     if is_main_process:
         logger.info(f'Enable gradient checkpointing: {args.gradient_checkpointing}')

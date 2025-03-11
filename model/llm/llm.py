@@ -25,6 +25,7 @@ class RWKV7LM(nn.Module):
             length_normalized_loss: bool = True,
             lsm_weight: float = 0.0,
             mix_ratio: List[int] = [5, 15],
+            drop_ratio = 0.0,
     ):
         super(RWKV7LM, self).__init__()
         self.llm_input_size = llm_input_size
@@ -59,6 +60,12 @@ class RWKV7LM(nn.Module):
         self.sampling = sampling
         self.mix_ratio = mix_ratio
         
+        #Dropout
+        if drop_ratio > 0:
+            self.dropout = nn.Dropout(drop_ratio)
+        else:
+            self.dropout = None
+        
     def pad_unpad_sequence(self, sos_eos_emb, text_token, text_token_len, task_id_emb, speech_token, speech_token_len):
         device = text_token.device
         text_token = unpad_sequence(text_token, text_token_len.cpu(), batch_first=True)
@@ -72,7 +79,7 @@ class RWKV7LM(nn.Module):
         return lm_input, attention_mask
     def forward(
             self,
-            batch: dict
+            batch: dict,
     ) -> Dict[str, Optional[torch.Tensor]]:
         """
         Args:
@@ -109,7 +116,8 @@ class RWKV7LM(nn.Module):
         # 5.1 create attention mask
         # attention mask is [1,text_token_len,1,sp_token_len,0,0,0]
         
-
+        if self.dropout is not None:
+            lm_input = self.dropout(lm_input)
         # 6. run lm forward
         lm_output = self.llm(inputs_embeds=lm_input, attention_mask=attention_mask,output_hidden_states=True,return_dict=True)
         hidden_states = lm_output.hidden_states[-1]
