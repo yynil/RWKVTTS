@@ -168,7 +168,7 @@ class RWKV7LM(nn.Module):
             if num_trials > max_trials:
                 raise RuntimeError('sampling reaches max_trials {} and still get eos when ignore_eos is True, check your input!'.format(max_trials))
         return top_ids
-    
+    @torch.inference_mode
     def inference(
             self,
             text: torch.Tensor,
