@@ -26,6 +26,7 @@ class RWKV7LM(nn.Module):
             lsm_weight: float = 0.0,
             mix_ratio: List[int] = [5, 15],
             drop_ratio = 0.0,
+            vocab_size = 0,
     ):
         super(RWKV7LM, self).__init__()
         self.llm_input_size = llm_input_size
@@ -42,6 +43,9 @@ class RWKV7LM(nn.Module):
             #load configuration and init model withouth loading weights
             model_configuration = AutoConfig.from_pretrained(llm,trust_remote_code=True)
             self.llm = AutoModelForCausalLM.from_config(model_configuration,trust_remote_code=True)
+            if vocab_size != 0:
+                from train_scripts.train_functions import alter_emb_and_head # Only used for inference
+                self.llm = alter_emb_and_head(self.llm,vocab_size,speech_token_size)
         else:
             self.llm = llm
         self.text_embedding = self.llm.get_input_embeddings()
