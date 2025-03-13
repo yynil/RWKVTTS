@@ -45,7 +45,7 @@ class RWKV7LM(nn.Module):
         else:
             self.llm = llm
         self.text_embedding = self.llm.get_input_embeddings()
-        self.llm_decoder = nn.Linear(llm_output_size, speech_token_size + 1)
+        # self.llm_decoder = nn.Linear(llm_output_size, speech_token_size + 1)
         self.criterion_ce = LabelSmoothingLoss(
             size=speech_token_size + 1,
             padding_idx=IGNORE_ID,
@@ -120,8 +120,9 @@ class RWKV7LM(nn.Module):
             lm_input = self.dropout(lm_input)
         # 6. run lm forward
         lm_output = self.llm(inputs_embeds=lm_input, attention_mask=attention_mask,output_hidden_states=True,return_dict=True)
-        hidden_states = lm_output.hidden_states[-1]
-        logits = self.llm_decoder(hidden_states)
+        # hidden_states = lm_output.hidden_states[-1]
+        # logits = self.llm_decoder(hidden_states)
+        logits = lm_output.logits
         lm_target = lm_target[:, 1:].contiguous()
         loss = self.criterion_ce(logits, lm_target)
         acc = th_accuracy(logits.view(-1, self.speech_token_size + 1), lm_target, ignore_label=IGNORE_ID)
