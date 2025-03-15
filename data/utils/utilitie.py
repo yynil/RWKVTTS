@@ -538,7 +538,7 @@ def generate_speech_tokens_single_process(cosy_model_dir, prompts_dir, output_di
                     logger.error(f"语言 '{language}' 在提示词中不存在! 可用语言: {list(prompts.keys())}")
                     return 0
                 
-                llm_prompt_speech_token = model_input['llm_prompt_speech_token'].cpu().tolist()
+                llm_prompt_speech_token = model_input['llm_prompt_speech_token'].cpu().tolist() if 'llm_prompt_speech_token' in model_input else []
                 
                 processed_count = 0
                 for tts_text in splits_txt_by_lines:
