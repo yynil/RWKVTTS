@@ -376,10 +376,10 @@ def generate_speech_tokens(llm,frontend,tts_text,model_input,device):
     tts_text = frontend.text_normalize(tts_text,split=False, text_frontend=True)
     tts_text_token, tts_text_token_len = frontend._extract_text_token(tts_text)
     tts_text_token_len = torch.tensor([tts_text_token.shape[1]], dtype=torch.int32).to(device)
-    prompt_text = model_input['prompt_text'].to(device)
-    prompt_text_len = torch.tensor([prompt_text.shape[1]], dtype=torch.int32).to(device)
-    llm_prompt_speech_token = model_input['llm_prompt_speech_token'].to(device)
-    prompt_speech_token_len = torch.tensor([llm_prompt_speech_token.shape[1]], dtype=torch.int32).to(device)
+    prompt_text = model_input['prompt_text'].to(device) if 'prompt_text' in model_input else torch.zeros(1, 0, dtype=torch.int32).to(device)
+    prompt_text_len = torch.tensor([prompt_text.shape[1]], dtype=torch.int32).to(device) if prompt_text is not None else torch.zeros(1, 0, dtype=torch.int32).to(device)
+    llm_prompt_speech_token = model_input['llm_prompt_speech_token'].to(device) if 'llm_prompt_speech_token' in model_input else torch.zeros(1, 0, dtype=torch.int32).to(device)
+    prompt_speech_token_len = torch.tensor([llm_prompt_speech_token.shape[1]], dtype=torch.int32).to(device) if llm_prompt_speech_token is not None else None
     flow_prompt_speech_token = model_input['flow_prompt_speech_token'].to(device)
     prompt_speech_feat = model_input['prompt_speech_feat'].to(device)
     llm_embedding = model_input['llm_embedding'].to(device)
@@ -547,6 +547,14 @@ def generate_speech_tokens_single_process(cosy_model_dir, prompts_dir, output_di
                             tts_text = generate_mixed_instructions(tts_text, language)
                             prompt_text = ""
                             llm_prompt_speech_token[0]=[]
+                            if 'prompt_text' in model_input:
+                                del model_input['prompt_text']
+                            if 'prompt_text_len' in model_input:
+                                del model_input['prompt_text_len']
+                            if 'llm_prompt_speech_token' in model_input:
+                                del model_input['llm_prompt_speech_token']
+                            if 'llm_prompt_speech_token_len' in model_input:
+                                del model_input['llm_prompt_speech_token_len']
                         # 生成语音标记
                         tts_speech_tokens = generate_speech_tokens(llm, frontend, tts_text, model_input, device)
                         output_data = {
