@@ -136,6 +136,11 @@ class ScriptArguments:
         metadata={"help": "drop prompt ratio"}
     )
     
+    ckpt_file: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to model checkpoint file"}
+    )
+    
 def setup_logging(local_rank):
     """Configure logging"""
     if local_rank <= 0:
@@ -324,6 +329,12 @@ def main():
     llm_input_size = model.config.hidden_size
     llm_output_size = model.config.hidden_size
     model  = RWKV7LM(llm_input_size,llm_output_size,args.speech_token_size,model,None,drop_ratio=args.drop_out)
+    if args.ckpt_file is not None:
+        if is_main_process:
+            logger.info(f"Loading checkpoint from {args.ckpt_file}")
+        info = model.load_state_dict(torch.load(args.ckpt_file))
+        if is_main_process:
+            logger.info(f"Loaded checkpoint info: {info}")
     model.train()
     if is_main_process:
         logger.info(f'Enable gradient checkpointing: {args.gradient_checkpointing}')
