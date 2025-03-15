@@ -5,6 +5,29 @@ import torch
 import random
 import time
 random.seed(time.time())
+import logging
+from tqdm import tqdm
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def verify_jsonl_files(data_files):
+    """检查每个 jsonl 文件的有效性"""
+    invalid_files = []
+    
+    for file_path in tqdm(data_files, desc="验证文件"):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for i, line in enumerate(f):
+                    try:
+                        json.loads(line)
+                    except json.JSONDecodeError:
+                        invalid_files.append((file_path, i+1))
+                        logging.error(f"文件 {file_path} 在第 {i+1} 行有无效的 JSON")
+                        break
+        except Exception as e:
+            invalid_files.append((file_path, f"读取错误: {str(e)}"))
+            logging.error(f"无法读取文件 {file_path}: {str(e)}")
+    
+    return invalid_files
 def load_jsonl_dataset(directory,tokenizer):
     '''
     load jsonl files in a directory recursively
@@ -14,7 +37,67 @@ def load_jsonl_dataset(directory,tokenizer):
         for file in files:
             if file.endswith('.jsonl'):
                 data_files.append(os.path.join(root, file))
-    dataset = datasets.load_dataset('json', data_files=data_files)['train']
+    
+    logging.info(f"找到 {len(data_files)} 个 JSONL 文件")
+    # 验证文件
+    invalid_files = verify_jsonl_files(data_files)
+    if invalid_files:
+        logging.error(f"发现 {len(invalid_files)} 个无效文件:")
+        for file_info in invalid_files:
+            if isinstance(file_info[1], int):
+                logging.error(f"  - {file_info[0]} (错误在第 {file_info[1]} 行)")
+            else:
+                logging.error(f"  - {file_info[0]} ({file_info[1]})")
+        
+        # 移除无效文件
+        valid_files = [f for f in data_files if f not in [info[0] for info in invalid_files]]
+        logging.info(f"继续处理剩余的 {len(valid_files)} 个有效文件")
+        data_files = valid_files
+    # 手动收集所有样本，确保特征一致性
+    all_samples = []
+    
+    for file_path in tqdm(data_files, desc="加载数据集"):
+        try:
+            # 手动解析JSONL文件，避免datasets加载时的类型推断问题
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        data = json.loads(line)
+                        # 确保所有字段存在且类型一致
+                        llm_prompt_speech_token = data.get('llm_prompt_speech_token', [])
+                        tts_speech_tokens = data.get('tts_speech_tokens', [])
+                        text = str(data.get('text', ""))
+                        prompt_text = str(data.get('prompt_text', ""))
+                        
+                        # 确保列表类型
+                        if not isinstance(llm_prompt_speech_token, list):
+                            llm_prompt_speech_token = []
+                        if not isinstance(tts_speech_tokens, list):
+                            tts_speech_tokens = []
+                            
+                        # 添加处理后的样本
+                        all_samples.append({
+                            'llm_prompt_speech_token': llm_prompt_speech_token,
+                            'tts_speech_tokens': tts_speech_tokens,
+                            'text': text,
+                            'prompt_text': prompt_text
+                        })
+                    except json.JSONDecodeError:
+                        continue  # 跳过无效的JSON行
+                    except Exception as e:
+                        logging.error(f"处理样本时出错: {str(e)}")
+        except Exception as e:
+            logging.error(f"打开文件 {file_path} 时出错: {str(e)}")
+    
+    if not all_samples:
+        raise ValueError("没有成功加载任何样本")
+    
+    # 创建数据集
+    logging.info(f"手动创建数据集，包含 {len(all_samples)} 个样本")
+    dataset = datasets.Dataset.from_list(all_samples)
+    
+    logging.info(f"成功加载 {len(dataset)} 个样本")
+    
     #1. concatenate llm_prompt_speech_token and tts_speech_tokens (list of int)
     #delay the concatenation to collate_fn since sometimes we want to drop the prompt
     # dataset = dataset.map(lambda x: {'speech_token': x['llm_prompt_speech_token'] + x['tts_speech_tokens']},remove_columns=['tts_speech_tokens','llm_prompt_speech_token'])
@@ -25,8 +108,9 @@ def load_jsonl_dataset(directory,tokenizer):
     #   4. the length of the prompt_text is greater than 500
     #   5. the length of the text_token is less than 1
     #   6. the length of the prompt_text_token is less than 1
-    dataset = dataset.filter(lambda x: len(x['llm_prompt_speech_token']) > 1 and len(x['llm_prompt_speech_token']) < 1000 and len(x['tts_speech_tokens']) > 1 and len(x['tts_speech_tokens']) < 1000
-                             and len(tokenizer.encode(x['text'])) < 500 and len(tokenizer.encode(x['prompt_text'])) < 500 and len(tokenizer.encode(x['text'])) > 1 and len(tokenizer.encode(x['prompt_text'])) > 1)
+    dataset = dataset.filter(lambda x:len(x['llm_prompt_speech_token']) < 2048 and len(x['tts_speech_tokens']) < 2048
+                             and len(tokenizer.encode(x['text'])) < 2048 and len(tokenizer.encode(x['prompt_text'])) < 2048 )
+    logging.info(f"过滤后剩余 {len(dataset)} 个样本")
     #2. tokenize the text to text_tokens and prompt_text to prompt_text_tokens
     # dataset = dataset.map(lambda x: {'text_tokens': tokenizer.encode(x['text']), 'prompt_text_tokens': tokenizer.encode(x['prompt_text'])},remove_columns=['text','prompt_text'])
     return dataset

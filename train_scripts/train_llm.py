@@ -19,7 +19,7 @@ import time
 import regex as re
 from data.utils.llm_dataset import load_jsonl_dataset, collate_fn
 from model.llm.llm import RWKV7LM
-from train_scripts.train_functions import train_step
+from train_scripts.train_functions import train_step,alter_emb_and_head
 logger = logging.getLogger(__name__)
 @dataclass
 class ScriptArguments:
@@ -239,7 +239,7 @@ def main():
             ]
         }
     tokenizer.add_special_tokens(special_tokens)
-    
+    vocab_size = tokenizer.vocab_size
     # Load dataset
     if is_main_process:
         logger.info(f"Loading dataset from {args.data_file}")
@@ -317,6 +317,7 @@ def main():
     if is_main_process:
         logger.info(f"Initializing model with DeepSpeed config")
     model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.bfloat16,trust_remote_code=True)
+    model = alter_emb_and_head(model,vocab_size,args.speech_token_size)
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
     model.train()
