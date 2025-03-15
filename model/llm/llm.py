@@ -145,7 +145,7 @@ class RWKV7LM(nn.Module):
     
     def forward_one_step(self, xs, masks, cache=None):
         input_masks = masks[:, -1, :]
-        outs = self.llm.model(
+        outs = self.llm(
             inputs_embeds=xs,
             attention_mask=input_masks,
             output_hidden_states=True,
@@ -153,9 +153,9 @@ class RWKV7LM(nn.Module):
             use_cache=True,
             past_key_values=cache,
         )
-        xs = outs.hidden_states[-1]
+        logits = outs.logits
         new_cache = outs.past_key_values
-        return xs, new_cache
+        return logits, new_cache
     
     def sampling_ids(
             self,
@@ -220,10 +220,11 @@ class RWKV7LM(nn.Module):
         prefill_time = 0
         prefill_length = lm_input.shape[1]
         for i in range(max_len):
-            y_pred, cache = self.forward_one_step(lm_input,
+            logits, cache = self.forward_one_step(lm_input,
                                                       masks=torch.tril(torch.ones((1, lm_input.shape[1], lm_input.shape[1]), device=lm_input.device)).to(torch.bool),
                                                       cache=cache)
-            logp = self.llm_decoder(y_pred[:, -1]).log_softmax(dim=-1)
+            # print(f'logits.shap is {logits.shape}')
+            logp = logits[:,-1].log_softmax(dim=-1)
             top_ids = self.sampling_ids(logp.squeeze(dim=0), out_tokens, sampling, ignore_eos=True if i < min_len else False).item()
             if top_ids == self.speech_token_size:
                 break
