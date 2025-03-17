@@ -53,3 +53,42 @@ curl -X POST http://localhost:8000/api/rwkv_tts \
 2. 提示文本是可选的，但提供它可以帮助模型更好地理解提示音频。没有的话就跟随语音语调，适合跨语言使用。
 3. 长文本可能需要更长的处理时间
 4. 服务默认有600秒(10分钟)的处理超时时间
+
+
+#### 端点：/api/rwkv_tts_instruct
+
+根据指示生成语音
+
+#### 请求参数
+| 参数名 | 类型 | 必填 |描述 |
+| --- | --- | --- | --- |
+| text | string | 是 | 要转换为语音的文本内容 |
+| audio_format | string | 否 | 输出音频格式，支持 "wav" 或 "mp3"，默认为 "wav" |
+|instruct|string|是|输出的指示|
+|prompt_audio|file|是|提示音频文件，模型将尝试模仿该音频的声音特征|
+
+
+ #### 响应
+成功时返回生成的音频文件，HTTP 状态码为 200。
+
+#### 指示说明：
+
+| 指示 | 描述 | 例子 |
+| --- | --- | --- |
+|情感|高兴(Happy), 悲伤(Sad), 惊讶(Surprised), 愤怒(Angry), 恐惧(Fearful), 厌恶(Disgusted), 冷静(Calm), 严肃(Serious)|instruct: 你能用高兴的情感说吗？<br> text:今天真是太开心了，马上要放假了！|
+|方言|粤语, 四川话, 上海话, 郑州话, 长沙话, 天津话|instruct: 请问你能模仿粤语的口音吗？<br> text:我要去买菜|
+|语速|快速(Fast), 非常快速(Very Fast), 慢速(Slow), 非常慢速(Very Slow)|instruct: 请用非常快速的语速说一下<br> text:我要去买菜|
+|角色扮演|神秘(Mysterious), 凶猛(Fierce), 好奇(Curious), 优雅(Elegant), 孤独(Lonely), 机器人(Robot), 小猪佩奇(Peppa), etc.| instruct: 请用小猪佩奇的声音说一下<br> text:我要去买菜|
+|语气词|'[breath]', '[noise]','[laughter]', '[cough]', '[clucking]', '[accent]','[quick_breath]',"[hissing]", "[sigh]", "[vocalized-noise]","[lipsmack]", "[mn]"|instruct: 请用小猪配齐的声音说话<br> text:我要去买菜[laughter]|
+
+#### cURL 例子：
+```bash
+curl -X 'POST' \
+  'https://fastapi.rwkvos.com/api/rwkv_tts_instruct' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: multipart/form-data' \
+  -F 'text=[noise]马上要放假了！[laughter]' \
+  -F 'instruct=请用小猪佩奇的声音说一下' \
+  -F 'prompt_audio=@mine.wav;type=audio/wav' \
+  -F 'audio_format=wav'
+  ``` 
