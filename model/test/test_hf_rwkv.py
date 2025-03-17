@@ -1,9 +1,7 @@
-model_path = "/external_data/models/rwkv7-2.9B-world"
-from tracemalloc import stop
-from regex import F
+model_path = "/external_data/models/rwkv7-0.4B-world/"
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
-device = 'cuda:1'
+device = 'cuda:0'
 model = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True).to(device=device, dtype=torch.float16)
 model.eval()
 

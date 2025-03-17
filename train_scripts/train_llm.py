@@ -231,6 +231,18 @@ def main():
     if is_main_process:
         logger.info(f"Loading tokenizer from {args.model_name}")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name,trust_remote_code=True)
+    # special_tokens = {
+    #         'pad_token': '<|rwkv_tokenizer_end_of_text|>',
+    #         'additional_special_tokens': [
+    #             '<|endofprompt|>',
+    #             '[breath]', '<strong>', '</strong>', '[noise]',
+    #             '[laughter]', '[cough]', '[clucking]', '[accent]',
+    #             '[quick_breath]',
+    #             "<laughter>", "</laughter>",
+    #             "[hissing]", "[sigh]", "[vocalized-noise]",
+    #             "[lipsmack]", "[mn]"
+    #         ]
+    #     }
     special_tokens = {
             'pad_token': '<|rwkv_tokenizer_end_of_text|>',
             'additional_special_tokens': [

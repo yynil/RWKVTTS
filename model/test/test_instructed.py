@@ -27,16 +27,17 @@ if __name__ == '__main__':
     from cosyvoice.utils.file_utils import load_wav
     import torchaudio
     prompt_audios = [
-        # '/home/yueyulin/github/RWKVTTS/zero_shot_prompt.wav',
-        '/home/yueyulin/github/RWKVTTS/mine.wav',
+        '/home/yueyulin/github/RWKVTTS/zero_shot_prompt.wav',
+        # '/home/yueyulin/github/RWKVTTS/mine.wav',
         # '/home/yueyulin/github/RWKVTTS/new.wav',
         # '/home/yueyulin/github/RWKVTTS/Trump.wav',
     ]
     
     prompt_texts = [
-            '尝试一下以机器人的角色和我交流。',
-            '请用悲伤的语气说话。',
-            '请用上海话说下一句话。'
+            # '希望你以后做的比我还好呦。',
+            # '请用非常快速的语速说。',
+            # '请用非常快速的语速说。',
+            '请用愤怒的情感说一下。'
         ]
     
     # do_tts('By unifying streaming and non-streaming synthesis within a single framework, CosyVoice 2 achieves human parity naturalness, minimal response latency, and virtually lossless synthesis quality in streaming mode. ',prompt_texts,cosyvoice,"instructed_en")
