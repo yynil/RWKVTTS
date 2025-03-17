@@ -34,11 +34,11 @@ if __name__ == '__main__':
     ]
     
     prompt_texts = [
-            '尝试一下以小猪佩奇的角色和我交流。',
-            '请用非常快速的语速说。',
-            '请用四川话和我说话。'
+            '尝试一下以机器人的角色和我交流。',
+            '请用悲伤的语气说话。',
+            '请用上海话说下一句话。'
         ]
     
     # do_tts('By unifying streaming and non-streaming synthesis within a single framework, CosyVoice 2 achieves human parity naturalness, minimal response latency, and virtually lossless synthesis quality in streaming mode. ',prompt_texts,cosyvoice,"instructed_en")
     
-    do_tts('一个教授逻辑学的教授，[laughter]有三个学生，而且三个学生均非常聪明！[breath]一天教授给他们出了一个题，[breath]教授在每个人<strong>脑门上</strong>贴了一张纸条并告诉他们，每个人的纸条上都写了一个正整数，且某两个数的和等于第三个！',prompt_audios,prompt_texts,cosyvoice,"instructed_cn")
+    do_tts('[laughter]有时候，看着小孩子们的天真行为[laughter]，我们总会会心一笑。',prompt_audios,prompt_texts,cosyvoice,"instructed_cn")

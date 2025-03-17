@@ -8,6 +8,8 @@ logging.basicConfig(level=logging.WARNING)  # 将日志级别设置为WARNING或
 # 特别设置可能产生这些消息的库的日志级别
 for logger_name in ["uvicorn", "uvicorn.error", "uvicorn.access", "starlette", "fastapi"]:
     logging.getLogger(logger_name).setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -25,7 +27,7 @@ from tts_service import TTS_Service
 
 # 创建TTS服务
 tts_service = TTS_Service(
-    model_path="/home/yueyulin/models/CosyVoice2-0.5B_RWKV_1.5B/",
+    model_path="/home/yueyulin/models/CosyVoice2-0.5B-RWKV-7-1.5B-Instruct/",
     device_list=["cuda:0"],  # 可以是 ["cuda:0", "cuda:1"] 等
     threads_per_device=2
 )
@@ -55,7 +57,7 @@ async def rwkv_tts(
     prompt_audio_bytes = None
     if prompt_audio:
         prompt_audio_bytes = await prompt_audio.read()
-    
+    logger.info(f"Processing {text} with prompt_text: {prompt_text}")
     try:
         # 调用TTS服务
         result = tts_service.tts(
@@ -88,7 +90,55 @@ async def rwkv_tts(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"TTS 处理失败: {str(e)}")
 
+@app.post("/api/rwkv_tts_instruct")
+async def rwkv_tts_instruct(
+    text: str = Form(...),
+    instruct: Optional[str] = Form(None),
+    prompt_audio: Optional[UploadFile] = File(None),
+    audio_format: str = Form("wav")
+):
+    # 读取上传的音频文件（如果有）
+    prompt_audio_bytes = None
+    if prompt_audio:
+        prompt_audio_bytes = await prompt_audio.read()
     
+    try:
+        logger.info(f"Processing {text} with instruct: {instruct}")
+        # 处理instruct参数，拼接<|endofprompt|>和text
+        processed_text = text
+        if instruct:
+            processed_text = instruct + "<|endofprompt|>" + text
+        logger.info(f"Processed text: {processed_text}")
+        # 调用TTS服务，不传递prompt_text
+        result = tts_service.tts(
+            text=processed_text,
+            prompt_text=None,  # 设置为None，不使用prompt_text
+            prompt_audio=prompt_audio_bytes,
+            audio_format=audio_format
+        )
+        
+        # 设置响应的内容类型
+        if audio_format.lower() == "wav":
+            content_type = "audio/wav"
+        else:
+            content_type = "audio/mpeg"
+            
+        # 创建自定义响应，添加必要的头信息
+        headers = {
+            "Content-Disposition": f"attachment; filename=result.{audio_format.lower()}",
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "public, max-age=0"
+        }
+        # 返回音频数据
+        return Response(
+            content=result['audio'], 
+            media_type=content_type,
+            headers=headers
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"TTS 处理失败: {str(e)}")
+      
 @app.on_event("shutdown")
 async def shutdown_event():
     tts_service.shutdown()
