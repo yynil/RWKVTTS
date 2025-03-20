@@ -15,7 +15,7 @@ for file in os.listdir(jsonl_dir):
         with open(os.path.join(jsonl_dir, file), "r") as f:
             print("Loading", file)
             data = json.load(f)
-            key_name = os.path.basename(file).replace("_embeddings.jsonl", "")
+            key_name = os.path.basename(file).replace("_embeddings.json", "")
             np_array = np.array(data)
             if np_array.shape[0] == 1:
                 np_array = np_array[0]
@@ -24,11 +24,11 @@ for file in os.listdir(jsonl_dir):
                 kmeans = KMeans(n_clusters=1, random_state=0, n_init = 'auto').fit(np_array)
                 np_array = kmeans.cluster_centers_[0]
                 
-            embeddings[key_name] = torch.tensor(np_array, dtype=torch.float32)
+            embeddings[key_name]= {'embedding' : torch.tensor(np_array, dtype=torch.float32).unsqueeze(0)}
 torch.save(embeddings, output_file_name)
 print("Embeddings saved to", output_file_name)
 
 state_dict = torch.load(output_file_name)
 print("Loaded embeddings from", output_file_name)
 for key in state_dict:
-    print(key, state_dict[key].shape)
+    print(key, state_dict[key]['embedding'].shape)
