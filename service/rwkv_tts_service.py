@@ -2,6 +2,7 @@ import io
 from typing import Optional
 import logging
 import sys
+import argparse
 
 # 配置日志级别
 logging.basicConfig(level=logging.WARNING)  # 将日志级别设置为WARNING或更高
@@ -24,34 +25,52 @@ app.add_middleware(
 )
 
 from tts_service import TTS_Service
-
-# 创建TTS服务
-tts_service = TTS_Service(
-    model_path="/home/yueyulin/models/CosyVoice2-0.5B-RWKV-7-1.5B-Instruct/",
-    device_list=["cuda:0"],  # 可以是 ["cuda:0", "cuda:1"] 等
-    threads_per_device=2
-)
-#需要对tts_service 进行几次请求预热
-if True:
-    print('预热')
-    prompt_audio_file = 'new.wav'
-    text = '这是一个测试'
-    prompt_text = '少年强则中国强。'
-    prompt_audio_data = open(prompt_audio_file, 'rb').read()
-    for i in range(2*1):
-        data = tts_service.tts(text, prompt_text, prompt_audio_data, 'wav')
-    print('预热完成')
-    del prompt_audio_data, text, prompt_text, prompt_audio_file
+tts_service = None
+def initialize_tts_service(model_path, device_list, threads_per_device):
+    global tts_service
+    tts_service = TTS_Service(
+        model_path=model_path,
+        device_list=device_list,
+        threads_per_device=threads_per_device
+    )
+    #需要对tts_service 进行几次请求预热
+    if True:
+        print('预热')
+        prompt_audio_file = 'new.wav'
+        text = '这是一个测试'
+        prompt_text = '少年强则中国强。'
+        try:
+            with open(prompt_audio_file, 'rb') as f:
+                prompt_audio_data = f.read()
+        except FileNotFoundError:
+            print(f"预热失败: 找不到文件 {prompt_audio_file}")
+            return  # 退出初始化
+        
+        for i in range(2*1):
+            data = tts_service.tts(text, prompt_text, prompt_audio_data, 'wav')
+        print('预热完成')
+        del prompt_audio_data, text, prompt_text, prompt_audio_file
 class TTSResponse(BaseModel):
     audio: bytes
     sample_rate: int = 24000
-
+    
+@app.get("/api/speakers")
+async def list_speakers():
+    """
+    列出可用的说话人ID。
+    """
+    try:
+        return list(tts_service.speaker_ids)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取说话人列表失败: {str(e)}")
+    
 @app.post("/api/rwkv_tts")
 async def rwkv_tts(
     text: str = Form(...),
     prompt_text: Optional[str] = Form(None),
     prompt_audio: Optional[UploadFile] = File(None),
-    audio_format: str = Form("wav")
+    audio_format: str = Form("wav"),
+    ref_voice: Optional[str] = Form(None)
 ):
     # 读取上传的音频文件（如果有）
     prompt_audio_bytes = None
@@ -64,7 +83,8 @@ async def rwkv_tts(
             text=text,
             prompt_text=prompt_text,
             prompt_audio=prompt_audio_bytes,
-            audio_format=audio_format
+            audio_format=audio_format,
+            ref_voice=ref_voice
         )
         
         # 设置响应的内容类型
@@ -95,8 +115,10 @@ async def rwkv_tts_instruct(
     text: str = Form(...),
     instruct: Optional[str] = Form(None),
     prompt_audio: Optional[UploadFile] = File(None),
-    audio_format: str = Form("wav")
+    audio_format: str = Form("wav"),
+    ref_voice: Optional[str] = Form(None)
 ):
+    logger.info(f"Inscripted Processing {text} with instruct: {instruct}, ref_voice: {ref_voice}, audio_format: {audio_format}, prompt_audio: {prompt_audio}")
     # 读取上传的音频文件（如果有）
     prompt_audio_bytes = None
     if prompt_audio:
@@ -114,7 +136,8 @@ async def rwkv_tts_instruct(
             text=processed_text,
             prompt_text=None,  # 设置为None，不使用prompt_text
             prompt_audio=prompt_audio_bytes,
-            audio_format=audio_format
+            audio_format=audio_format,
+            ref_voice=ref_voice
         )
         
         # 设置响应的内容类型
@@ -144,4 +167,16 @@ async def shutdown_event():
     tts_service.shutdown()
 if __name__ == "__main__":
     import uvicorn
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_path", type=str, default="/home/yueyulin/models/CosyVoice2-0.5B-RWKV-7-1.5B-Instruct-CHENJPKO/", help="模型路径")
+    parser.add_argument("--device_list", type=str, default="cuda:0", help="设备列表，用逗号分隔")
+    parser.add_argument("--threads_per_device", type=int, default=2, help="每个设备的线程数")
+    
+    args = parser.parse_args()
+    model_path = args.model_path
+    device_list = args.device_list.split(",")
+    threads_per_device = args.threads_per_device
+    print(f"使用参数: model_path={model_path}, device_list={device_list}, threads_per_device={threads_per_device}")
+    
+    initialize_tts_service(model_path, device_list, threads_per_device)
     uvicorn.run(app, host="0.0.0.0", port=8000)

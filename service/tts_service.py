@@ -36,7 +36,6 @@ class TTS_Service:
         print(f"初始化TTS服务，模型路径: {model_path}")
         print(f"设备列表: {device_list}, 每个设备线程数: {threads_per_device}")
         print(f"总线程数: {self.total_threads}")
-        
         # 启动工作线程
         for i in range(self.total_threads):
             device_idx = i % len(self.device_list)
@@ -55,6 +54,8 @@ class TTS_Service:
             # 初始化CosyVoice2引擎
             print(f"工作线程 {worker_id} 正在初始化 CosyVoice2 引擎，设备: {device}")
             engine = CosyVoice2(self.model_path, device=device, fp16=False, load_jit=False)
+            if worker_id == 0:
+                self.speaker_ids = engine.frontend.spk2info.keys()
             print(f"工作线程 {worker_id} 已初始化完成，设备: {device}")
             
             while not self.stop_event.is_set():
@@ -66,7 +67,7 @@ class TTS_Service:
                         self.task_queue.task_done()
                         break
                         
-                    future, text, prompt_text, prompt_audio, audio_format = task
+                    future, text, prompt_text, prompt_audio, audio_format,ref_voice = task
                     
                     try:
                         start_time = time.time()
@@ -90,17 +91,32 @@ class TTS_Service:
                         else:
                             # 无提示音频的情况
                             prompt_speech_16k = None
+                            if ref_voice is not None:
+                                if ref_voice in self.speaker_ids:
+                                    ref_voice = ref_voice
+                                else:
+                                    raise ValueError(f"未找到说话人: {ref_voice}")
                         
                         # 运行TTS推理
                         tts_result = None
-                        if prompt_text is not None and len(prompt_text.strip()) > 0:
-                            for output in engine.inference_zero_shot(text, prompt_text, prompt_speech_16k, stream=False, speed=1):
+                        if prompt_speech_16k is None:
+                            if prompt_text is not None and len(prompt_text) >0:
+                                tts_text = f'{prompt_text}<|endofprompt|>{text}'
+                            else:
+                                tts_text = text
+                            print(f'Processing {tts_text} from {ref_voice}')
+                            for output in engine.inference_sft(tts_text, ref_voice, stream=False,speed=1):
                                 tts_result = output['tts_speech']
-                                break  # 只处理第一个输出
+                                break
                         else:
-                            for output in engine.inference_cross_lingual(text, prompt_speech_16k, stream=False, speed=1):
-                                tts_result = output['tts_speech']
-                                break  # 只处理第一个输出
+                            if prompt_text is not None and len(prompt_text.strip()) > 0:
+                                for output in engine.inference_zero_shot(text, prompt_text, prompt_speech_16k, stream=False, speed=1):
+                                    tts_result = output['tts_speech']
+                                    break  # 只处理第一个输出
+                            else:
+                                for output in engine.inference_cross_lingual(text, prompt_speech_16k, stream=False, speed=1):
+                                    tts_result = output['tts_speech']
+                                    break  # 只处理第一个输出
                         
                         # 转换为字节流
                         audio_bytes = io.BytesIO()
@@ -152,7 +168,7 @@ class TTS_Service:
     
     def tts(self, text: str, prompt_text: Optional[str] = None, 
             prompt_audio: Optional[bytes] = None, audio_format: str = "wav",
-            timeout: float = 600.0) -> Dict[str, Any]:
+            timeout: float = 600.0,ref_voice: str=None) -> Dict[str, Any]:
         """
         执行文本到语音的转换
         
@@ -170,7 +186,7 @@ class TTS_Service:
         future = Future()
         
         # 将任务放入队列
-        self.task_queue.put((future, text, prompt_text, prompt_audio, audio_format))
+        self.task_queue.put((future, text, prompt_text, prompt_audio, audio_format,ref_voice))
         
         try:
             # 等待Future完成或超时

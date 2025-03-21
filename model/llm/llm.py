@@ -171,6 +171,7 @@ class RWKV7LM(nn.Module):
                 break
             num_trials += 1
             if num_trials > max_trials:
+                print(f'decoded_tokens is {decoded_tokens}, top_ids is {top_ids}, sampling is {sampling}, ignore_eos is {ignore_eos}')
                 raise RuntimeError('sampling reaches max_trials {} and still get eos when ignore_eos is True, check your input!'.format(max_trials))
         return top_ids
     @torch.inference_mode
@@ -195,8 +196,28 @@ class RWKV7LM(nn.Module):
         print(f'text_len is {text_len}')
         device = text.device
         text = torch.concat([prompt_text, text], dim=1)
+        
+        end_of_prompt_id = 65531
+        #find the length of instruction and text the text is [prompt, end_of_prompt, text]
+        end_of_prompt_mask = (text == end_of_prompt_id)
+        # 使用nonzero找到所有匹配的索引
+        end_of_prompt_indices = end_of_prompt_mask.nonzero()
+        
+        # 默认值：没有找到end_of_prompt_id
+        instruction_length = 0
+        content_length = text_len
+        
+        # 如果找到了end_of_prompt_id
+        if end_of_prompt_indices.size(0) > 0:
+            # 获取第一个匹配的索引（只考虑第一个出现的end_of_prompt_id）
+            # 由于text是二维张量 [batch, seq_len]，我们需要第二个维度的索引
+            instruction_length = end_of_prompt_indices[0, 1].item()
+            content_length = text_len - (instruction_length + 1)  # +1是因为要跳过end_of_prompt_id标记本身
+            # print(f'找到end_of_prompt标记，指令长度: {instruction_length}, 内容长度: {content_length}')
+    
         text_len += prompt_text_len
         text = self.text_embedding(text)
+        
 
         # 3. concat llm_input
         sos_eos_emb = self.llm_embedding.weight[self.sos_eos].reshape(1, 1, -1)
@@ -208,9 +229,9 @@ class RWKV7LM(nn.Module):
         lm_input = torch.concat([sos_eos_emb, text, task_id_emb, prompt_speech_token_emb], dim=1)
 
         # 4. cal min/max_length
-        min_len = int((text_len - prompt_text_len) * min_token_text_ratio)
-        max_len = int((text_len - prompt_text_len) * max_token_text_ratio)
-
+        min_len = content_length * min_token_text_ratio
+        max_len = content_length * max_token_text_ratio
+        # print(f'min_len is {min_len}, max_len is {max_len}')
         # 5. step by step decode
         out_tokens = []
         cache = None
