@@ -65,8 +65,8 @@ curl -X POST http://localhost:8000/api/rwkv_tts \
 | text | string | 是 | 要转换为语音的文本内容 |
 | audio_format | string | 否 | 输出音频格式，支持 "wav" 或 "mp3"，默认为 "wav" |
 |instruct|string|是|输出的指示|
-|prompt_audio|file|是|提示音频文件，模型将尝试模仿该音频的声音特征|
-
+|prompt_audio|file|否|提示音频文件，模型将尝试模仿该音频的声音特征|
+|ref_voice｜string|否|内置的参考音色，模型将尝试模仿该音频的声音特征,ref_voice 和 prompt_audio 两个必须有一个不为空，prompt_audio 不为空的时候，ref_voice 不生效|
 
  #### 响应
 成功时返回生成的音频文件，HTTP 状态码为 200。
@@ -80,6 +80,8 @@ curl -X POST http://localhost:8000/api/rwkv_tts \
 |语速|快速(Fast), 非常快速(Very Fast), 慢速(Slow), 非常慢速(Very Slow)|instruct: 请用非常快速的语速说一下<br> text:我要去买菜|
 |角色扮演|神秘(Mysterious), 凶猛(Fierce), 好奇(Curious), 优雅(Elegant), 孤独(Lonely), 机器人(Robot), 小猪佩奇(Peppa), etc.| instruct: 请用小猪佩奇的声音说一下<br> text:我要去买菜|
 |语气词|'[breath]', '[noise]','[laughter]', '[cough]', '[clucking]', '[accent]','[quick_breath]',"[hissing]", "[sigh]", "[vocalized-noise]","[lipsmack]", "[mn]"|instruct: 请用小猪配齐的声音说话<br> text:我要去买菜[laughter]|
+|说日语|日本語で話してください。|instruct:日本語で話してください。text:いろんな食べ物があって、いいよね。 |
+|说韩语|한국어로 말씀해주세요.|instruct:한국어로 말씀해주세요。text:오늘은 날씨가 좋아요. |
 
 #### cURL 例子：
 ```bash
@@ -92,3 +94,26 @@ curl -X 'POST' \
   -F 'prompt_audio=@mine.wav;type=audio/wav' \
   -F 'audio_format=wav'
   ``` 
+
+#### 端点：/api/speakers
+获取所有内置的音色
+```bash
+curl -X 'GET' \
+  'https://fastapi.rwkvos.com/api/speakers' \
+  -H 'accept: application/json'
+```
+
+返回
+```json
+[
+  "Qingzu_Korean",
+  "Local Diner_English",
+  "Jessamy_Korean",
+  "Tailor_Korean",
+  "Master of the Disciples of Sanctus Medicus_English",
+  "Ruoyue_Japanese",
+  "Argenti_Korean",
+  "Yanming_English",
+  "Timid Researcher_Korean",
+]
+```
