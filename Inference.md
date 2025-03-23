@@ -79,6 +79,8 @@ More examples can be found in the model/test directory.
 model/test/test_instructed.py is an example to use the instructed voice flow to generate the audio.
 model/test/test_speaker_adapter.py is an example to use the speaker adapter to generate the audio.
 
+Please refer the [Service Call URL](service/README.md) for the instructions.
+
 If you pass the prompt_texts as None, the engine will only clone the voice flow and texture which is good to clone voice cross lingual. If you pass the correct prompt texts to the engine, the engine will try to continue to finish the audio tokens following the prompt audio you provided. This will be good to continue the audio you provided but it will be weird when you try to mix languages. 
 
 The test source code is [test code](model/test/test_initialize.py).
