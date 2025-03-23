@@ -188,12 +188,6 @@ class RWKV7LM(nn.Module):
             max_token_text_ratio: float = 20,
             min_token_text_ratio: float = 2,
     ) -> Generator[torch.Tensor, None, None]:
-        print(f'prompt_text is {prompt_text}')
-        print(f'prompt_text_len is {prompt_text_len}')
-        print(f'prompt_speech_token is {prompt_speech_token}')
-        print(f'prompt_speech_token_len is {prompt_speech_token_len}')
-        print(f'text is {text}')
-        print(f'text_len is {text_len}')
         device = text.device
         text = torch.concat([prompt_text, text], dim=1)
         
