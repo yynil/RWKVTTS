@@ -190,6 +190,7 @@ class RWKV7LM(nn.Module):
     ) -> Generator[torch.Tensor, None, None]:
         device = text.device
         text = torch.concat([prompt_text, text], dim=1)
+        text_len = text_len + prompt_text_len
         
         end_of_prompt_id = 65531
         #find the length of instruction and text the text is [prompt, end_of_prompt, text]
@@ -255,8 +256,8 @@ class RWKV7LM(nn.Module):
         end_time = time.time()
         decode_time = end_time - start_time - prefill_time
         decoded_length = len(out_tokens)
-        print(f'tps for prefill is {prefill_length/prefill_time}. {prefill_length} tokens in {prefill_time} seconds')
-        print(f'tps for decode is {decoded_length/decode_time}. {decoded_length} tokens in {decode_time} seconds')
+        print(f'tps for prefill is {prefill_length} tokens in {prefill_time} seconds')
+        print(f'tps for decode is  {decoded_length} tokens in {decode_time} seconds')
         print(f'out_tokens is {out_tokens}')
     
 if __name__ == '__main__':
