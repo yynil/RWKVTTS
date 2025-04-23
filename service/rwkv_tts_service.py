@@ -47,7 +47,7 @@ def initialize_tts_service(model_path, device_list, threads_per_device):
             return  # 退出初始化
         
         for i in range(2*1):
-            data = tts_service.tts(text, prompt_text, prompt_audio_data, 'wav')
+            data = tts_service.tts(text,instruct='冷静地说', prompt_text=prompt_text, prompt_audio=prompt_audio_data, audio_format='wav')
         print('预热完成')
         del prompt_audio_data, text, prompt_text, prompt_audio_file
 class TTSResponse(BaseModel):
@@ -115,10 +115,11 @@ async def rwkv_tts_instruct(
     text: str = Form(...),
     instruct: Optional[str] = Form(None),
     prompt_audio: Optional[UploadFile] = File(None),
+    prompt_text: Optional[str] = Form(None),
     audio_format: str = Form("wav"),
     ref_voice: Optional[str] = Form(None)
 ):
-    logger.info(f"Inscripted Processing {text} with instruct: {instruct}, ref_voice: {ref_voice}, audio_format: {audio_format}, prompt_audio: {prompt_audio}")
+    logger.info(f"Inscripted Processing {text} with instruct: {instruct}, ref_voice: {ref_voice}, audio_format: {audio_format}, prompt_audio: {prompt_audio}, prompt_text: {prompt_text}")
     # 读取上传的音频文件（如果有）
     prompt_audio_bytes = None
     if prompt_audio:
@@ -126,15 +127,12 @@ async def rwkv_tts_instruct(
     
     try:
         logger.info(f"Processing {text} with instruct: {instruct}")
-        # 处理instruct参数，拼接<|endofprompt|>和text
-        processed_text = text
-        if instruct:
-            processed_text = instruct + "<|endofprompt|>" + text
-        logger.info(f"Processed text: {processed_text}")
+
         # 调用TTS服务，不传递prompt_text
         result = tts_service.tts(
-            text=processed_text,
-            prompt_text=None,  # 设置为None，不使用prompt_text
+            text=text,
+            instruct=instruct,
+            prompt_text=prompt_text,  # 设置为None，不使用prompt_text
             prompt_audio=prompt_audio_bytes,
             audio_format=audio_format,
             ref_voice=ref_voice

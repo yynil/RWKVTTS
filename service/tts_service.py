@@ -67,7 +67,7 @@ class TTS_Service:
                         self.task_queue.task_done()
                         break
                         
-                    future, text, prompt_text, prompt_audio, audio_format,ref_voice = task
+                    future, text, prompt_text, prompt_audio, audio_format,ref_voice,instruct = task
                     
                     try:
                         start_time = time.time()
@@ -110,8 +110,13 @@ class TTS_Service:
                                 break
                         else:
                             if prompt_text is not None and len(prompt_text.strip()) > 0:
-                                for output in engine.inference_zero_shot(text, prompt_text, prompt_speech_16k, stream=False, speed=1):
-                                    tts_result = output['tts_speech']
+                                if instruct is not None and len(instruct.strip()) > 0:
+                                    for output in engine.inference_instruct2(text, instruct, prompt_speech_16k, stream=False, speed=1,prompt_text=prompt_text):
+                                        tts_result = output['tts_speech']
+                                        break  # 只处理第一个输出
+                                else:
+                                    for output in engine.inference_zero_shot(text, prompt_text, prompt_speech_16k, stream=False, speed=1):
+                                        tts_result = output['tts_speech']
                                     break  # 只处理第一个输出
                             else:
                                 for output in engine.inference_cross_lingual(text, prompt_speech_16k, stream=False, speed=1):
@@ -166,9 +171,13 @@ class TTS_Service:
             print(f"工作线程 {worker_id} 初始化或运行时出错: {str(e)}")
             traceback.print_exc()
     
-    def tts(self, text: str, prompt_text: Optional[str] = None, 
-            prompt_audio: Optional[bytes] = None, audio_format: str = "wav",
-            timeout: float = 600.0,ref_voice: str=None) -> Dict[str, Any]:
+    def tts(self, text: str, 
+            instruct: Optional[str] = None,
+            prompt_text: Optional[str] = None, 
+            prompt_audio: Optional[bytes] = None, 
+            audio_format: str = "wav",
+            timeout: float = 600.0,
+            ref_voice: str=None) -> Dict[str, Any]:
         """
         执行文本到语音的转换
         
@@ -186,7 +195,7 @@ class TTS_Service:
         future = Future()
         
         # 将任务放入队列
-        self.task_queue.put((future, text, prompt_text, prompt_audio, audio_format,ref_voice))
+        self.task_queue.put((future, text, prompt_text, prompt_audio, audio_format,ref_voice,instruct))
         
         try:
             # 等待Future完成或超时
