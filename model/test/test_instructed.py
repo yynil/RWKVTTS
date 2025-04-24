@@ -21,7 +21,7 @@ def do_tts(tts_text,prompt_audios,prompt_texts,cosyvoice,prefix,prompt_audio_tex
  520  python model/test/test_instructed.py /external_data/models/CosyVoice2-0.5B-RWKV-7-1.5B-Instruct-CHENJPKO/ cuda:0 "日本語で話してください。" "友達のあやかさんです。" /external_data/yueyudata/starrail-voice-top-japanese/Japanese_Acheron_4.wav "だが、あの時、私が刀を抜くことを選んでいたら"
   522  python model/test/test_instructed.py /external_data/models/CosyVoice2-0.5B-RWKV-7-1.5B-Instruct-CHENJPKO/ cuda:0 "한국어로 말씀해주세요." "좋습니다 좋아요" /external_data/yueyudata/starrail-voice-top-korean/Korean_Acheron_8.wav "긴장하지마,정상적인현상이야"
   523  python model/test/test_instructed.py /external_data/models/CosyVoice2-0.5B-RWKV-7-1.5B-Instruct-CHENJPKO/ cuda:0 "冷静地说." "I can do nothing but save all of you guys." /external_data/yueyudata/starrail-voice-top-english/English_Acheron_6.wav "This is the only way I can ensure everyone's safety."
-  python model/test/test_instructed.py /external_data/models/CosyVoice2-0.5B-RWKV-7-1.5B-Instruct-CHENJPKO/ cuda:0 "冷静地 说." "我们只有团结起来才能战胜所有敌人,冲出重围!" /external_data/yueyudata/genshin-voice-top/Chinese\(PRC\)_Acheron_3.wav "我们到了."
+  python model/test/test_instructed.py /external_data/models/CosyVoice2-0.5B-RWKV-7-1.5B-Instruct-CHENJPKO/ cuda:0 "你能模仿四川话的口音说吗?" "我们只有团结起来才能战胜所有敌人,冲出重围!" /external_data/yueyudata/genshin-voice-top/Chinese\(PRC\)_Acheron_3.wav "我们到了."
 '''
 if __name__ == '__main__':
     from cosyvoice.cli.cosyvoice import CosyVoice2
