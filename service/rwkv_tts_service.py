@@ -5,7 +5,7 @@ import sys
 import argparse
 
 # 配置日志级别
-logging.basicConfig(level=logging.WARNING)  # 将日志级别设置为WARNING或更高
+logging.basicConfig(level=logging.INFO)  # 将日志级别设置为WARNING或更高
 # 特别设置可能产生这些消息的库的日志级别
 for logger_name in ["uvicorn", "uvicorn.error", "uvicorn.access", "starlette", "fastapi"]:
     logging.getLogger(logger_name).setLevel(logging.WARNING)

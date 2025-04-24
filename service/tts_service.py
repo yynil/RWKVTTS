@@ -119,9 +119,14 @@ class TTS_Service:
                                         tts_result = output['tts_speech']
                                     break  # 只处理第一个输出
                             else:
-                                for output in engine.inference_cross_lingual(text, prompt_speech_16k, stream=False, speed=1):
-                                    tts_result = output['tts_speech']
-                                    break  # 只处理第一个输出
+                                if instruct is not None and len(instruct.strip()) > 0:
+                                    for output in engine.inference_instruct2(text, instruct, prompt_speech_16k, stream=False, speed=1):
+                                        tts_result = output['tts_speech']
+                                        break  # 只处理第一个输出
+                                else:
+                                    for output in engine.inference_cross_lingual(text, prompt_speech_16k, stream=False, speed=1):
+                                        tts_result = output['tts_speech']
+                                        break  # 只处理第一个输出
                         
                         # 转换为字节流
                         audio_bytes = io.BytesIO()
