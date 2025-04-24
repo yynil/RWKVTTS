@@ -53,7 +53,7 @@ class TTS_Service:
         try:
             # 初始化CosyVoice2引擎
             print(f"工作线程 {worker_id} 正在初始化 CosyVoice2 引擎，设备: {device}")
-            engine = CosyVoice2(self.model_path, device=device, fp16=False, load_jit=False)
+            engine = CosyVoice2(self.model_path, device=device, fp16=True, load_jit=False)
             if worker_id == 0:
                 self.speaker_ids = engine.frontend.spk2info.keys()
             print(f"工作线程 {worker_id} 已初始化完成，设备: {device}")
