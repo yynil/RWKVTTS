@@ -137,7 +137,6 @@ async def rwkv_tts_instruct(
             audio_format=audio_format,
             ref_voice=ref_voice
         )
-        
         # 设置响应的内容类型
         if audio_format.lower() == "wav":
             content_type = "audio/wav"

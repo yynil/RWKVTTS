@@ -118,7 +118,7 @@ class TTS_Service:
                                 else:
                                     for output in engine.inference_zero_shot(text, prompt_text, prompt_speech_16k, stream=False, speed=1):
                                         tts_result = output['tts_speech']
-                                    break  # 只处理第一个输出
+                                        break  # 只处理第一个输出
                             else:
                                 if instruct is not None and len(instruct.strip()) > 0:
                                     for output in engine.inference_instruct2(text, instruct, prompt_speech_16k, stream=False, speed=1):
@@ -130,11 +130,14 @@ class TTS_Service:
                                         break  # 只处理第一个输出
                         
                         # 转换为字节流
+                        print(f'tts_result.shape: {tts_result.shape}')
                         audio_bytes = io.BytesIO()
                         if audio_format.lower() == "wav":
+                            print(f'output wav')
                             import soundfile as sf
                             sf.write(audio_bytes, tts_result.squeeze().cpu().numpy(), engine.sample_rate, format='WAV')
                         elif audio_format.lower() == "mp3":
+                            print(f'output mp3')
                             import soundfile as sf
                             from pydub import AudioSegment
                             # 先保存为临时WAV
@@ -147,7 +150,7 @@ class TTS_Service:
                         
                         generation_time = time.time() - start_time
                         audio_time = tts_result.shape[1] / engine.sample_rate
-                        
+                        print(f'generation_time: {generation_time}, audio_time: {audio_time}')
                         # 设置Future的结果
                         if not future.done():
                             future.set_result({

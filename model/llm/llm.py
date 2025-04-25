@@ -191,6 +191,7 @@ class RWKV7LM(nn.Module):
         device = text.device
         text = torch.concat([prompt_text, text], dim=1)
         text_len = text_len + prompt_text_len
+        original_text_len = text_len.item()
         
         end_of_prompt_id = 65531
         #find the length of instruction and text the text is [prompt, end_of_prompt, text]
@@ -209,6 +210,7 @@ class RWKV7LM(nn.Module):
             instruction_length = end_of_prompt_indices[0, 1].item()
             content_length = text_len - (instruction_length + 1)  # +1是因为要跳过end_of_prompt_id标记本身
             # print(f'找到end_of_prompt标记，指令长度: {instruction_length}, 内容长度: {content_length}')
+            original_text_len -= (instruction_length+1)
     
         text_len += prompt_text_len
         text = self.text_embedding(text)
@@ -226,7 +228,7 @@ class RWKV7LM(nn.Module):
         # 4. cal min/max_length
         min_len = content_length * min_token_text_ratio
         max_len = content_length * max_token_text_ratio
-        # print(f'min_len is {min_len}, max_len is {max_len}')
+        print(f'min_len is {min_len}, max_len is {max_len} content_length {content_length} original_text_len {original_text_len}')
         # 5. step by step decode
         out_tokens = []
         cache = None
@@ -241,7 +243,7 @@ class RWKV7LM(nn.Module):
                                                       cache=cache)
             # print(f'logits.shap is {logits.shape}')
             logp = logits[:,-1].log_softmax(dim=-1)
-            top_ids = self.sampling_ids(logp.squeeze(dim=0), out_tokens, sampling, ignore_eos=True if i < min_len else False).item()
+            top_ids = self.sampling_ids(logp.squeeze(dim=0), out_tokens, sampling, ignore_eos=True if i+original_text_len < min_len else False).item()
             if top_ids == self.speech_token_size:
                 break
             if top_ids > self.speech_token_size:
