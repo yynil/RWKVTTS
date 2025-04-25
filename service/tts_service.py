@@ -68,7 +68,8 @@ class TTS_Service:
                         break
                         
                     future, text, prompt_text, prompt_audio, audio_format,ref_voice,instruct = task
-                    
+                    if prompt_text is not None and len(prompt_text) > 2*len(text):
+                        prompt_text = None
                     try:
                         start_time = time.time()
                         
