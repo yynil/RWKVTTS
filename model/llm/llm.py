@@ -187,7 +187,9 @@ class RWKV7LM(nn.Module):
             sampling: int = 25,
             max_token_text_ratio: float = 20,
             min_token_text_ratio: float = 2,
+            cache = None
     ) -> Generator[torch.Tensor, None, None]:
+        print(f'cache in LLM is {cache}')
         device = text.device
         text = torch.concat([prompt_text, text], dim=1)
         text_len = text_len + prompt_text_len
@@ -231,7 +233,7 @@ class RWKV7LM(nn.Module):
         print(f'min_len is {min_len}, max_len is {max_len} content_length {content_length} original_text_len {original_text_len}')
         # 5. step by step decode
         out_tokens = []
-        cache = None
+        # cache = None
         start_time = time.time()
         end_time = 0
         is_prefill = True
@@ -245,6 +247,11 @@ class RWKV7LM(nn.Module):
             logp = logits[:,-1].log_softmax(dim=-1)
             top_ids = self.sampling_ids(logp.squeeze(dim=0), out_tokens, sampling, ignore_eos=True if i+original_text_len < min_len else False).item()
             if top_ids == self.speech_token_size:
+                for layer_idx in range(len(cache.states)):
+                    cache.states[layer_idx]['conv_state'] = torch.zeros_like(cache.states[layer_idx]['conv_state'],device=cache.states[layer_idx]['conv_state'].device)
+                    cache.states[layer_idx]['ffn_state'] = torch.zeros_like(cache.states[layer_idx]['ffn_state'],device=cache.states[layer_idx]['ffn_state'].device)
+                    
+                print(f'finish decoding:{cache.seen_tokens}')
                 break
             if top_ids > self.speech_token_size:
                 continue

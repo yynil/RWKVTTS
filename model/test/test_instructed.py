@@ -1,22 +1,23 @@
 import time
 
 
-def do_tts(tts_text,prompt_audios,prompt_texts,cosyvoice,prefix,prompt_audio_text = None):
+def do_tts(tts_text,prompt_audio,instruct,prompt_text,cosyvoice,prefix):
     import logging
-    for i in range(len(prompt_audios)):
-        prompt_audio_file = prompt_audios[i]
-        prompt_speech_16k = load_wav(prompt_audio_file, 16000)
-        for j in range(len(prompt_texts)):
-            prompt_text = prompt_texts[j]
-            logging.info(f'Processing {prompt_text} from {prompt_audio_file}')
-            torch.cuda.manual_seed_all(time.time())
-            if len(prompt_text) >0:
-                for result in cosyvoice.inference_instruct2(tts_text,prompt_text, prompt_speech_16k, stream=False,speed=1,prompt_text = prompt_audio_text):
-                    torchaudio.save(f"{prefix}_{i}_{j}.wav", result['tts_speech'], cosyvoice.sample_rate)
-            else:
-                for result in cosyvoice.inference_cross_lingual(tts_text, prompt_speech_16k, stream=False,speed=1):
-                    torchaudio.save(f"{prefix}_{i}_{j}.wav", result['tts_speech'], cosyvoice.sample_rate)
-            logging.info(f'Finished processing {prompt_text} from {prompt_audio_file}')
+    prompt_speech_16k = load_wav(prompt_audio, 16000)
+    logging.info(f'Processing {instruct} from {prompt_audio}')
+    torch.cuda.manual_seed_all(time.time())
+    wav_cnt = 0
+    if len(instruct) >0:
+        print(f'instruct: {instruct}')
+        for result in cosyvoice.inference_instruct2(tts_text,instruct, prompt_speech_16k, stream=False,speed=1,prompt_text = prompt_text):
+            torchaudio.save(f"{prefix}_{wav_cnt}.wav", result['tts_speech'], cosyvoice.sample_rate)
+            wav_cnt += 1
+    else:
+        print(f'tts_text: {tts_text}')
+        for result in cosyvoice.inference_zero_shot(tts_text, prompt_text, prompt_speech_16k, stream=False,speed=1):
+            torchaudio.save(f"{prefix}_{wav_cnt}.wav", result['tts_speech'], cosyvoice.sample_rate)
+            wav_cnt += 1
+    logging.info(f'Finished processing {prompt_text} from {prompt_audio}')
 '''
  520  python model/test/test_instructed.py /external_data/models/CosyVoice2-0.5B-RWKV-7-1.5B-Instruct-CHENJPKO/ cuda:0 "日本語で話してください。" "友達のあやかさんです。" /external_data/yueyudata/starrail-voice-top-japanese/Japanese_Acheron_4.wav "だが、あの時、私が刀を抜くことを選んでいたら"
   522  python model/test/test_instructed.py /external_data/models/CosyVoice2-0.5B-RWKV-7-1.5B-Instruct-CHENJPKO/ cuda:0 "한국어로 말씀해주세요." "좋습니다 좋아요" /external_data/yueyudata/starrail-voice-top-korean/Korean_Acheron_8.wav "긴장하지마,정상적인현상이야"
@@ -52,5 +53,10 @@ if __name__ == '__main__':
     
     # do_tts('[laughter]有时候，看着小孩子们的天真行为[laughter]，我们总会会心一笑。',prompt_audios,prompt_texts,cosyvoice,"instructed_cn")
     # do_tts(tts_text,prompt_audios,prompt_texts,cosyvoice,"instructed_cn")
-    do_tts(tts_text,[prompt_audio],[instruct],cosyvoice,"multilingual",prompt_text)
+    import os
+    if os.path.exists(tts_text):
+        print(f'read tts_text from {tts_text}')
+        tts_text = open(tts_text).read()
+        print(f'tts_text: {tts_text}')
+    do_tts(tts_text,prompt_audio,instruct,prompt_text,cosyvoice,"instructed")
     
