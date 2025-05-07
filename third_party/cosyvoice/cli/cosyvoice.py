@@ -151,7 +151,7 @@ class CosyVoice2(CosyVoice):
         original_prompt_text = prompt_text
         original_instruct_text = instruct_text
         for i in tqdm(self.frontend.text_normalize(tts_text, split=True, text_frontend=text_frontend)):
-            if cache.seen_tokens > 2048:
+            if cache.seen_tokens > 1024:
                 cache = Cache()
                 text_cnt = 0
                 prompt_text = original_prompt_text
@@ -167,3 +167,4 @@ class CosyVoice2(CosyVoice):
                 logging.info('yield speech len {}, rtf {}'.format(speech_len, (time.time() - start_time) / speech_len))
                 yield model_output
                 start_time = time.time()
+            text_cnt += 1
