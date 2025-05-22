@@ -80,6 +80,9 @@ class CosyVoice:
         prompt_text = self.frontend.text_normalize(prompt_text, split=False, text_frontend=text_frontend)
         original_prompt_text = prompt_text
         text_cnt = 0
+        next_prompt_feat = None
+        next_prompt_token = None
+        prev_text = None
         for i in tqdm(self.frontend.text_normalize(tts_text, split=True, text_frontend=text_frontend)):
             if (not isinstance(i, Generator)) and len(i) < 0.5 * len(prompt_text):
                 logging.warning('synthesis text {} too short than prompt text {}, this may lead to bad performance'.format(i, prompt_text))
@@ -91,17 +94,25 @@ class CosyVoice:
                 model_input = self.frontend.frontend_zero_shot(i, prompt_text, prompt_speech_16k, self.sample_rate)
             else:
                 model_input = self.frontend.frontend_zero_shot(i, '', prompt_speech_16k, self.sample_rate)
+                if next_prompt_token is not None and next_prompt_feat is not None:
+                    print(f'set the model_input flow_prompt_speech_token to {next_prompt_token.shape} and prompt_feat to {next_prompt_feat.shape}')
+                    model_input['flow_prompt_speech_token'] = next_prompt_token
+                    model_input['prompt_speech_feat'] = next_prompt_feat
                 del model_input['llm_prompt_speech_token']
                 del model_input['llm_prompt_speech_token_len']
+            print(f"flow_prompt_speech_token:{model_input['flow_prompt_speech_token']},flow_prompt_speech_token_len :{model_input['flow_prompt_speech_token_len']} ")
             print(f'current cache: {cache} for text {i}')
             start_time = time.time()
             logging.info('synthesis text {}'.format(i))
             for model_output in self.model.tts(**model_input, stream=stream, speed=speed,cache=cache):
                 speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
                 logging.info('yield speech len {}, rtf {}'.format(speech_len, (time.time() - start_time) / speech_len))
+                next_prompt_feat = model_output['next_prompt_feat']
+                next_prompt_token = model_output['next_prompt_token']
                 yield model_output
                 start_time = time.time()
             text_cnt += 1
+            prev_text = i
 
 
 
@@ -150,6 +161,8 @@ class CosyVoice2(CosyVoice):
         text_cnt = 0
         original_prompt_text = prompt_text
         original_instruct_text = instruct_text
+        next_prompt_feat = None
+        next_prompt_token = None
         for i in tqdm(self.frontend.text_normalize(tts_text, split=True, text_frontend=text_frontend)):
             if cache.seen_tokens > 1024:
                 cache = Cache()
@@ -160,11 +173,19 @@ class CosyVoice2(CosyVoice):
                 prompt_text = None
                 instruct_text = None
             model_input = self.frontend.frontend_instruct2(i, instruct_text, prompt_speech_16k, self.sample_rate,prompt_text)
+            if text_cnt != 0 and next_prompt_token is not None and next_prompt_feat is not None:
+                print(f'set the model_input flow_prompt_speech_token to {next_prompt_token.shape} and prompt_feat to {next_prompt_feat.shape}')
+                model_input['flow_prompt_speech_token'] = next_prompt_token
+                model_input['prompt_speech_feat'] = next_prompt_feat
+            print(f"flow_prompt_speech_token:{model_input['flow_prompt_speech_token'].shape} ")
+            print(f'current cache: {cache} for text {i}')
             start_time = time.time()
             logging.info(f'synthesis text {i} with instruct {instruct_text} and prompt_text {prompt_text}')
             for model_output in self.model.tts(**model_input, stream=stream, speed=speed,cache=cache):
                 speech_len = model_output['tts_speech'].shape[1] / self.sample_rate
                 logging.info('yield speech len {}, rtf {}'.format(speech_len, (time.time() - start_time) / speech_len))
+                next_prompt_feat = model_output['next_prompt_feat']
+                next_prompt_token = model_output['next_prompt_token']
                 yield model_output
                 start_time = time.time()
             text_cnt += 1

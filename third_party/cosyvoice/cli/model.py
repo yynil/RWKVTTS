@@ -376,6 +376,14 @@ class CosyVoice2Model(CosyVoiceModel):
                                          embedding=embedding.to(self.device),
                                          finalize=finalize)
         tts_mel = tts_mel[:, :, token_offset * self.flow.token_mel_ratio:]
+        print(f'tts_mel shape:{tts_mel.shape}, tts_token shape:{token.shape}, flow.token_mel_ratio: {self.flow.token_mel_ratio}, prompt_feat: {prompt_feat.shape}, prompt_token:{prompt_token.shape}, token offset:{token_offset}')
+        next_prompt_token_len = min(100,token.shape[1])
+        next_prompt_feat = tts_mel[:,:,-self.flow.token_mel_ratio*next_prompt_token_len:]
+        next_prompt_token = token[:,-next_prompt_token_len:]
+        from einops import rearrange
+        #rearrange next_prompt_feat from b,d,h to b,h,d
+        next_prompt_feat = rearrange(next_prompt_feat,'b d h -> b h d')
+        print(f'next_prompt_token:{next_prompt_token.shape}, next_prompt_feat :{next_prompt_feat.shape}')
         # append hift cache
         if self.hift_cache_dict[uuid] is not None:
             hift_cache_mel, hift_cache_source = self.hift_cache_dict[uuid]['mel'], self.hift_cache_dict[uuid]['source']
@@ -398,7 +406,7 @@ class CosyVoice2Model(CosyVoiceModel):
             tts_speech, tts_source = self.hift.inference(speech_feat=tts_mel, cache_source=hift_cache_source)
             if self.hift_cache_dict[uuid] is not None:
                 tts_speech = fade_in_out(tts_speech, self.hift_cache_dict[uuid]['speech'], self.speech_window)
-        return tts_speech
+        return tts_speech,next_prompt_feat,next_prompt_token
 
     def tts(self, text, flow_embedding, cache :Cache,llm_embedding=torch.zeros(0, 192),
             prompt_text=torch.zeros(1, 0, dtype=torch.int32),
@@ -418,7 +426,7 @@ class CosyVoice2Model(CosyVoiceModel):
                 time.sleep(0.1)
                 if len(self.tts_speech_token_dict[this_uuid]) - token_offset >= self.token_hop_len + self.flow.pre_lookahead_len:
                     this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid][:token_offset + self.token_hop_len + self.flow.pre_lookahead_len]).unsqueeze(dim=0)
-                    this_tts_speech = self.token2wav(token=this_tts_speech_token,
+                    this_tts_speech,next_prompt_feat,next_prompt_token = self.token2wav(token=this_tts_speech_token,
                                                      prompt_token=flow_prompt_speech_token,
                                                      prompt_feat=prompt_speech_feat,
                                                      embedding=flow_embedding,
@@ -433,7 +441,7 @@ class CosyVoice2Model(CosyVoiceModel):
             
             # deal with remain tokens, make sure inference remain token len equals token_hop_len when cache_speech is not None
             this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid]).unsqueeze(dim=0)
-            this_tts_speech = self.token2wav(token=this_tts_speech_token,
+            this_tts_speech,next_prompt_feat,next_prompt_token = self.token2wav(token=this_tts_speech_token,
                                              prompt_token=flow_prompt_speech_token,
                                              prompt_feat=prompt_speech_feat,
                                              embedding=flow_embedding,
@@ -445,7 +453,7 @@ class CosyVoice2Model(CosyVoiceModel):
             # deal with all tokens
             p.join()
             this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid]).unsqueeze(dim=0)
-            this_tts_speech = self.token2wav(token=this_tts_speech_token,
+            this_tts_speech,next_prompt_feat,next_prompt_token = self.token2wav(token=this_tts_speech_token,
                                              prompt_token=flow_prompt_speech_token,
                                              prompt_feat=prompt_speech_feat,
                                              embedding=flow_embedding,
@@ -453,7 +461,9 @@ class CosyVoice2Model(CosyVoiceModel):
                                              token_offset=0,
                                              finalize=True,
                                              speed=speed)
-            yield {'tts_speech': this_tts_speech.cpu()}
+            print(f'prompt_token shape:{flow_prompt_speech_token.shape}, prompt_feat shape:{prompt_speech_feat.shape}, embedding shape: {flow_embedding.shape}')
+            print(f'next_prompt_feat:{next_prompt_feat.shape}, next_prompt_token: {next_prompt_token.shape}')
+            yield {'tts_speech': this_tts_speech.cpu(),'next_prompt_feat':next_prompt_feat,'next_prompt_token':next_prompt_token}
         with self.lock:
             self.tts_speech_token_dict.pop(this_uuid)
             self.llm_end_dict.pop(this_uuid)
