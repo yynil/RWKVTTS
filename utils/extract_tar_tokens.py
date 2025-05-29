@@ -12,6 +12,9 @@ from sparktts.models.audio_tokenizer import BiCodecTokenizer
 from typing import Dict, Any
 import queue
 import time
+import psutil
+import gc  # 添加 gc 模块导入
+from datetime import datetime
 
 def get_available_gpu(process_id: int):
     """根据进程ID分配GPU，每个GPU最多分配两个进程"""
@@ -34,6 +37,12 @@ INIT_DONE_SIGNAL = "INIT_DONE"
 
 def worker_process(process_id: int, input_queue: mp.Queue, init_done_queue: mp.Queue, output_file: str, model_dir: str):
     """工作进程函数"""
+    process = psutil.Process()
+    
+    # 添加统计信息
+    start_time = time.time()
+    total_requests = 0
+    
     try:
         # 获取GPU资源
         gpu_id = get_available_gpu(process_id)
@@ -86,6 +95,30 @@ def worker_process(process_id: int, input_queue: mp.Queue, init_done_queue: mp.Q
                     f.write(json.dumps(result, ensure_ascii=False) + '\n')
                     f.flush()  # 确保数据及时写入磁盘
                     
+                    # 更新统计信息
+                    total_requests += 1
+                    if total_requests % 1000 == 0:
+                        current_time = time.time()
+                        total_time = current_time - start_time
+                        avg_time = total_time / total_requests
+                        print(f"Process {process_id} stats at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}:")
+                        print(f"  Total requests: {total_requests}")
+                        print(f"  Total time: {total_time:.2f}s")
+                        print(f"  Average time per request: {avg_time:.2f}s")
+                    
+                    # 处理完数据后立即清理
+                    del audio_array
+                    del audio_data
+                    del global_tokens
+                    del semantic_tokens
+                    torch.cuda.empty_cache()  # 清理GPU缓存
+                    gc.collect()  # 手动触发垃圾回收
+                    
+                    # 监控内存使用
+                    if process.memory_info().rss > 1024 * 1024 * 1024*100:  # 超过100GB
+                        print(f"Process {process_id} memory usage high: {process.memory_info().rss / 1024 / 1024}MB")
+                        torch.cuda.empty_cache()
+                    
                 except queue.Empty:
                     continue
                 except Exception as e:
@@ -99,7 +132,14 @@ def worker_process(process_id: int, input_queue: mp.Queue, init_done_queue: mp.Q
         # 即使初始化失败也发送信号，避免主进程卡住
         init_done_queue.put(INIT_DONE_SIGNAL)
     finally:
+        # 确保在进程结束时清理资源
+        del audio_tokenizer
+        torch.cuda.empty_cache()
         print(f"Process {process_id} shutting down...")
+
+def data_generator(dataset):
+    for item in dataset:
+        yield (item['json'], item['mp3']['array'], item['mp3']['sampling_rate'])
 
 def main():
     parser = argparse.ArgumentParser()
@@ -107,6 +147,7 @@ def main():
     parser.add_argument('--output_dir', type=str, default='/home/yueyulin/data/Emilia/ZH/tar_tokens/')
     parser.add_argument('--model_dir', type=str, default='/home/yueyulin/models/Spark-TTS-0.5B/')
     parser.add_argument('--num_proc', type=int, default=4, help='Number of processes to use')
+    parser.add_argument('--num_max_files', type=int, default=100, help='Number of max files to process')
     args = parser.parse_args()
 
     print(args)
@@ -135,17 +176,40 @@ def main():
             print(f"Warning: Process {i} initialization signal unexpected: {init_signal}")
     
     print("All processes initialized successfully")
-    
+    import glob
+    all_tars = glob.glob(os.path.join(args.input_dir, '*.tar'))
+    #sort by name
+    all_tars.sort()
+    all_tars = all_tars[:args.num_max_files]
+    all_tars = [os.path.join(args.input_dir, tar) for tar in all_tars]
+    print(f"Processing {all_tars} ")
     try:
         # 加载数据集
-        dataset = load_dataset('webdataset', data_files=os.path.join(args.input_dir, '*.tar'), split='train')
+        dataset = load_dataset('webdataset', data_files=all_tars, split='train')
         
-        # 分发数据到工作进程
+        current_queue_idx = 0
         for i, item in enumerate(dataset):
-            queue_idx = i % args.num_proc
-            # 只传递必要的数据
             data = (item['json'], item['mp3']['array'], item['mp3']['sampling_rate'])
-            queues[queue_idx].put(data)
+            
+            # 轮询查找空闲队列
+            max_attempts = args.num_proc
+            attempts = 0
+            while attempts < max_attempts:
+                if queues[current_queue_idx].qsize() < 100:  # 队列未满
+                    queues[current_queue_idx].put(data)
+                    current_queue_idx = (current_queue_idx + 1) % args.num_proc
+                    break
+                else:
+                    current_queue_idx = (current_queue_idx + 1) % args.num_proc
+                    attempts += 1
+                    if attempts == max_attempts:
+                        time.sleep(1)
+                        attempts = 0
+            
+            # 定期清理内存
+            if i % 100 == 0:  # 每处理100个文件清理一次
+                torch.cuda.empty_cache()
+                gc.collect()  # 手动触发垃圾回收
         
         # 发送退出信号给所有进程
         for queue in queues:
