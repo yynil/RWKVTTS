@@ -147,7 +147,8 @@ def main():
     parser.add_argument('--output_dir', type=str, default='/home/yueyulin/data/Emilia/ZH/tar_tokens/')
     parser.add_argument('--model_dir', type=str, default='/home/yueyulin/models/Spark-TTS-0.5B/')
     parser.add_argument('--num_proc', type=int, default=4, help='Number of processes to use')
-    parser.add_argument('--num_max_files', type=int, default=100, help='Number of max files to process')
+    parser.add_argument('--from_index', type=int, default=0, help='Start index of files to process (inclusive)')
+    parser.add_argument('--to_index', type=int, default=100, help='End index of files to process (exclusive)')
     args = parser.parse_args()
 
     print(args)
@@ -180,9 +181,10 @@ def main():
     all_tars = glob.glob(os.path.join(args.input_dir, '*.tar'))
     #sort by name
     all_tars.sort()
-    all_tars = all_tars[:args.num_max_files]
+    # 使用from_index和to_index来切片文件列表
+    all_tars = all_tars[args.from_index:args.to_index]
     all_tars = [os.path.join(args.input_dir, tar) for tar in all_tars]
-    print(f"Processing {all_tars} ")
+    print(f"Processing {len(all_tars)} files from index {args.from_index} to {args.to_index}")
     try:
         # 加载数据集
         dataset = load_dataset('webdataset', data_files=all_tars, split='train')
