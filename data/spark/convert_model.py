@@ -7,12 +7,13 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_dir", type=str, default="/home/yueyulin/models/rwkv7-0.1B-g1")
-    parser.add_argument("--output_dir", type=str, default="/home/yueyulin/models/rwkv7-0.1B-g1-respark")
+    parser.add_argument("--output_dir", type=str, default="/home/yueyulin/models/rwkv7-0.1B-g1-respark-audio")
     args = parser.parse_args()
     tokenizer,original_vocab_size = get_respark_tts_tokenizer(args.model_dir)
     new_vocab_size = tokenizer.vocab_size
     print(f"Original vocab size: {original_vocab_size}")
     print(f"New vocab size: {new_vocab_size}")
+    audio_vocab_size = new_vocab_size = original_vocab_size
 
     model = AutoModelForCausalLM.from_pretrained(args.model_dir,trust_remote_code=True)
     

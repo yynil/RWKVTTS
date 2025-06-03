@@ -3,11 +3,23 @@ import os
 import torch
 from collections import Counter
 import numpy as np
-import matplotlib.pyplot as plt
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from inference.rwkv7speech_inference import create_inputs
 
 def load_spark_jsonl_dataset(directory):
-    dataset = load_dataset('json', data_files=[ os.path.join(directory, f) for f in os.listdir(directory) if f.endswith('.jsonl')])
+    # 递归获取所有jsonl文件
+    jsonl_files = []
+    for root, _, files in os.walk(directory):
+        for file in files:
+            if file.endswith('.jsonl'):
+                jsonl_files.append(os.path.join(root, file))
+    
+    # 加载所有找到的jsonl文件
+    dataset = load_dataset('json', data_files=jsonl_files)
+    print(f'load {len(jsonl_files)} jsonl files')
     return dataset
+
 
 def convert_to_tts_format(example):
     """将原始格式转换为TTS格式"""
@@ -25,6 +37,20 @@ def convert_to_tts_format(example):
     formatted_text = f"<tts><text_start>{text}<text_end><global_start>{global_str}<global_end><sementic_start>{semantic_str}<sementic_end>"
     
     return {"text": formatted_text}
+
+def collate_fn_for_rwkv7speech(batch,tokenizer,rwkv7speech_model,max_length=2048,pad_to_max_length=True,vocab_size=8193):
+    
+    device = rwkv7speech_model.device
+    texts = [sample['text'] for sample in batch]
+    global_tokens_ids = [sample['global_tokens'] for sample in batch]
+    semantic_tokens_ids = [sample['semantic_tokens']+[vocab_size-1] for sample in batch]
+    input_ids_embs,attention_mask = create_inputs(texts,global_tokens_ids,semantic_tokens_ids,tokenizer,rwkv7speech_model)  
+    labels = torch.full((input_ids_embs.shape[0],input_ids_embs.shape[1]),-100,dtype=torch.long,device=device)
+    for i in range(len(semantic_tokens_ids)):
+        labels[i,-(len(semantic_tokens_ids[i])+1):-1] = torch.tensor(semantic_tokens_ids[i], device=device)
+    return {"input_embs": input_ids_embs,"attention_mask": attention_mask,"labels": labels}
+
+
 
 def collate_fn(batch, tokenizer, pad_to_max_length=True, max_length=2048, drop_prompt_audio_rate=-0.1,semantic_start_id=65536):
     # 获取所有样本的input_ids
@@ -82,105 +108,196 @@ def collate_fn(batch, tokenizer, pad_to_max_length=True, max_length=2048, drop_p
         "labels": labels
     }
 
-if __name__ == "__main__":
-    dataset = load_spark_jsonl_dataset("/home/yueyulin/data/Emilia/ZH/tar_tokens/")
-    print(dataset['train'][0])
-    # 使用map转换整个数据集，启用多进程
-    converted_dataset = dataset.map(
-        convert_to_tts_format,
-        num_proc=4,  # 使用4个进程
-        remove_columns=dataset['train'].column_names,  # 删除所有原有特征
-        desc="Converting to TTS format"  # 显示进度条描述
-    )
-    print("转换后的数据集示例：")
-    print(converted_dataset['train'][0])
-
-    rwkv_model_dir = '/home/yueyulin/models/rwkv7-0.1B-g1'
-    from transformers import AutoTokenizer
-    from utils.utilities import get_respark_tts_tokenizer
-    tokenizer = get_respark_tts_tokenizer(rwkv_model_dir)
+def process_single_batch(batch, rwkv7speech_model):
+    """
+    处理单个batch，生成与collate_fn_for_rwkv7speech相同格式的输出
     
-    # 统计长度分布
-    lengths = []
-    for sample in converted_dataset['train']:
+    Args:
+        batch: 包含input_ids, attention_mask_input_ids, global_tokens_ids, global_tokens_attention_mask,
+              semantic_tokens_ids, semantic_tokens_attention_mask的字典
+        rwkv7speech_model: 模型
+    
+    Returns:
+        包含input_embs, attention_mask, labels的字典
+    """
+    device = rwkv7speech_model.device
+    batch_size = batch['input_ids'].shape[0]
+    
+    # 获取每个样本的实际数据（去除填充）
+    input_ids_embs_list = []
+    max_length = 0
+    
+    for i in range(batch_size):
+        # 获取文本
+        text_length = batch['attention_mask_input_ids'][i].sum().item()
+        input_ids = batch['input_ids'][i, -text_length:]
+        
+        # 获取全局标记
+        global_length = batch['global_tokens_attention_mask'][i].sum().item()
+        global_ids = batch['global_tokens_ids'][i, -global_length:]
+        
+        # 获取语义标记
+        semantic_length = batch['semantic_tokens_attention_mask'][i].sum().item()
+        semantic_ids = batch['semantic_tokens_ids'][i, -semantic_length:]
+        
+        # 获取embeddings
+        input_ids_embs = rwkv7speech_model.text_embedder(input_ids.unsqueeze(0).to(device))
+        global_tokens_embs = rwkv7speech_model.global_embedder(global_ids.unsqueeze(0).to(device))
+        semantic_tokens_embs = rwkv7speech_model.model.embeddings(semantic_ids.unsqueeze(0).to(device))
+        
+        # 获取tts tag embeddings
+        tts_tag_embedder_0 = rwkv7speech_model.tts_tag_embedder(torch.tensor([[0]], dtype=torch.long, device=device))
+        tts_tag_embedder_1 = rwkv7speech_model.tts_tag_embedder(torch.tensor([[1]], dtype=torch.long, device=device))
+        
+        # 拼接embeddings
+        input_ids_embs = torch.cat([input_ids_embs, tts_tag_embedder_0, global_tokens_embs, tts_tag_embedder_1, semantic_tokens_embs], dim=1)
+        input_ids_embs_list.append(input_ids_embs)
+        max_length = max(max_length, input_ids_embs.shape[1])
+    
+    # 左填充和创建attention mask
+    attention_mask = torch.zeros(batch_size, max_length, dtype=torch.long, device=device)
+    for i in range(batch_size):
+        attention_mask[i, -input_ids_embs_list[i].shape[1]:] = 1
+        embs_pad_t = max_length - input_ids_embs_list[i].shape[1]
+        # 左填充input_ids_embs_list[i]
+        input_ids_embs_list[i] = torch.cat([
+            torch.zeros(1, embs_pad_t, input_ids_embs_list[i].shape[2], dtype=torch.long, device=device),
+            input_ids_embs_list[i]
+        ], dim=1)
+    
+    input_embs = torch.cat(input_ids_embs_list, dim=0)
+    
+    # 设置labels
+    labels = torch.full((batch_size, max_length), -100, dtype=torch.long, device=device)
+    for i in range(batch_size):
+        semantic_length = batch['semantic_tokens_attention_mask'][i].sum().item()
+        semantic_ids = batch['semantic_tokens_ids'][i, -semantic_length:]
+        # 找到semantic tokens在attention mask中的起始位置
+        semantic_start = (attention_mask[i] == 1).nonzero()[-semantic_length].item()
+        
+        # 设置labels：从tts_tag_embedder_1的位置开始预测
+        # 即从semantic_start - 1的位置开始设置labels
+        labels[i, semantic_start - 1:semantic_start + semantic_length - 1] = semantic_ids.to(device)
+    
+    return {
+        "input_embs": input_embs,
+        "attention_mask": attention_mask,
+        "labels": labels
+    }
+
+def collate_fn_simple(batch, tokenizer, pad_to_max_length=True, max_length=2048,semantic_eos_token_id=8192):
+    """
+    简单的数据整理函数，处理文本、全局标记和语义标记的对齐，使用左对齐方式（左边填充）
+    所有填充值统一使用0，由attention mask决定有效位置
+    
+    Args:
+        batch: 批次数据
+        tokenizer: 分词器
+        pad_to_max_length: 是否填充到最大长度
+        max_length: 最大序列长度
+    
+    Returns:
+        包含对齐后的各种标记和注意力掩码的字典
+    """
+    # 获取所有样本的input_ids
+    input_ids_list = []
+    global_tokens_list = []
+    semantic_tokens_list = []
+    
+    for sample in batch:
         input_ids = tokenizer.encode(sample['text'])
-        lengths.append(len(input_ids))
+        input_ids_list.append(input_ids)
+        global_tokens_list.append(sample['global_tokens'])
+        semantic_tokens_list.append(sample['semantic_tokens']+[semantic_eos_token_id])
     
-    # 计算基本统计信息
-    lengths = np.array(lengths)
-    print(f"\n长度统计信息：")
-    print(f"最小长度: {lengths.min()}")
-    print(f"最大长度: {lengths.max()}")
-    print(f"平均长度: {lengths.mean():.2f}")
-    print(f"中位数长度: {np.median(lengths):.2f}")
-    print(f"标准差: {lengths.std():.2f}")
+    # 找到最长的序列长度
+    max_text_length = max(len(ids) for ids in input_ids_list)
+    max_global_length = max(len(tokens) for tokens in global_tokens_list)
+    max_semantic_length = max(len(tokens) for tokens in semantic_tokens_list)
     
-    # 计算分位数
-    percentiles = [50, 75, 90, 95, 99]
-    for p in percentiles:
-        print(f"{p}分位数: {np.percentile(lengths, p):.2f}")
+    if pad_to_max_length:
+        max_text_length = min(max_text_length, max_length)
+        max_global_length = min(max_global_length, max_length)
+        max_semantic_length = min(max_semantic_length, max_length)
     
-    # 绘制长度分布直方图
-    plt.figure(figsize=(12, 6))
-    plt.hist(lengths, bins=50, alpha=0.7)
-    plt.title('Text Length Distribution')
-    plt.xlabel('Length')
-    plt.ylabel('Number of Samples')
-    plt.grid(True, alpha=0.3)
-    plt.savefig('length_distribution.png')
-    plt.close()
+    # 初始化batch的tensors
+    batch_size = len(batch)
     
-    # 统计不同长度区间的样本数量
-    bins = [0, 100, 200, 500, 1000, 2000, 3000, 4000, 5000, float('inf')]
-    hist, _ = np.histogram(lengths, bins=bins)
-    print("\n长度区间分布：")
-    for i in range(len(bins)-1):
-        print(f"{bins[i]}-{bins[i+1]}: {hist[i]} 样本")
+    # 文本相关的tensors
+    input_ids = torch.full((batch_size, max_text_length), tokenizer.pad_token_id, dtype=torch.long)
+    attention_mask_input_ids = torch.zeros((batch_size, max_text_length), dtype=torch.long)
+    
+    # 全局标记相关的tensors
+    global_tokens_ids = torch.zeros((batch_size, max_global_length), dtype=torch.long)
+    global_tokens_attention_mask = torch.zeros((batch_size, max_global_length), dtype=torch.long)
+    
+    # 语义标记相关的tensors
+    semantic_tokens_ids = torch.zeros((batch_size, max_semantic_length), dtype=torch.long)
+    semantic_tokens_attention_mask = torch.zeros((batch_size, max_semantic_length), dtype=torch.long)
+    
+    # 填充每个样本
+    for i in range(batch_size):
+        # 处理文本
+        text_ids = input_ids_list[i]
+        if len(text_ids) > max_text_length:
+            text_ids = text_ids[:max_text_length]  # 从开头截断
+        pad_length = max_text_length - len(text_ids)
+        input_ids[i, pad_length:] = torch.tensor(text_ids)
+        attention_mask_input_ids[i, pad_length:] = 1
+        
+        # 处理全局标记
+        global_tokens = global_tokens_list[i]
+        if len(global_tokens) > max_global_length:
+            global_tokens = global_tokens[:max_global_length]  # 从开头截断
+        pad_length = max_global_length - len(global_tokens)
+        global_tokens_ids[i, pad_length:] = torch.tensor(global_tokens)
+        global_tokens_attention_mask[i, pad_length:] = 1
+        
+        # 处理语义标记
+        semantic_tokens = semantic_tokens_list[i]
+        if len(semantic_tokens) > max_semantic_length:
+            semantic_tokens = semantic_tokens[:max_semantic_length]  # 从开头截断
+        pad_length = max_semantic_length - len(semantic_tokens)
+        semantic_tokens_ids[i, pad_length:] = torch.tensor(semantic_tokens)
+        semantic_tokens_attention_mask[i, pad_length:] = 1
+    
+    return {
+        "input_ids": input_ids,
+        "attention_mask_input_ids": attention_mask_input_ids,
+        "global_tokens_ids": global_tokens_ids,
+        "global_tokens_attention_mask": global_tokens_attention_mask,
+        "semantic_tokens_ids": semantic_tokens_ids,
+        "semantic_tokens_attention_mask": semantic_tokens_attention_mask
+    }
 
-    tokenizer = get_respark_tts_tokenizer(rwkv_model_dir)
-    # input_ids = tokenizer.encode(converted_dataset['train'][0]['text'])
-    # print(input_ids)
-    # text_start_id = tokenizer.encode("<text_start>")[0]
-    # text_end_id = tokenizer.encode("<text_end>")[0]
-    # global_start_id = tokenizer.encode("<global_start>")[0]
-    # global_end_id = tokenizer.encode("<global_end>")[0]
-    # semantic_start_id = tokenizer.encode("<sementic_start>")[0]
-    # semantic_end_id = tokenizer.encode("<sementic_end>")[0]
-
-    # global_start_index = input_ids.index(global_start_id)
-    # global_end_index = input_ids.index(global_end_id)   
-    # semantic_start_index = input_ids.index(semantic_start_id)
-    # semantic_end_index = input_ids.index(semantic_end_id)
-    # text_start_index = input_ids.index(text_start_id)
-    # text_end_index = input_ids.index(text_end_id)
-
-    # global_tokens = input_ids[global_start_index+1:global_end_index]
-    # semantic_tokens = input_ids[semantic_start_index+1:semantic_end_index]
-    # text = input_ids[text_start_index+1:text_end_index]
-
-    # print(global_tokens)
-    # print(semantic_tokens)
-    # print(text)
-
-    # print(f'global_start_index: {global_start_index}, global_end_index: {global_end_index}, semantic_start_index: {semantic_start_index}, semantic_end_index: {semantic_end_index}, global_start_id: {global_start_id}, global_end_id: {global_end_id}, semantic_start_id: {semantic_start_id}, semantic_end_id: {semantic_end_id}')
-    # print(f'{tokenizer.decode(text)}')
-    # global_tokens = [int(tokenizer.decode(g).replace('<|bicodec_global_', '').replace('|>', '')) for g in global_tokens]
-    # semantic_tokens = [int(tokenizer.decode(s).replace('<|bicodec_semantic_', '').replace('|>', '')) for s in semantic_tokens]
-    # print(global_tokens)
-    # print(semantic_tokens)
-
-    from torch.utils.data import DataLoader
+if __name__ == "__main__":
+    dataset = load_spark_jsonl_dataset("/home/yueyulin/data/Emilia/000_999/")['train']
+    print(dataset)
+    model_dir = '/home/yueyulin/models/rwkv7-0.1B-g1-respark-speech/'
+    device = "cuda:3"
+    rwkv7speech_model = AutoModelForCausalLM.from_pretrained(model_dir,trust_remote_code=True).bfloat16().to(device)
+    rwkv7speech_model.train()
+    tokenizer = AutoTokenizer.from_pretrained(model_dir,trust_remote_code=True)
+    print(rwkv7speech_model)
     from functools import partial
-    dataloader = DataLoader(converted_dataset['train'], batch_size=1, collate_fn=partial(collate_fn, tokenizer=tokenizer), num_workers=4)
+    collate_fn_for_rwkv7speech = partial(collate_fn_for_rwkv7speech,tokenizer=tokenizer,rwkv7speech_model=rwkv7speech_model)
+    
+    from torch.utils.data import DataLoader
+    dataloader = DataLoader(dataset,batch_size=2,collate_fn=collate_fn_for_rwkv7speech,shuffle=True)
     for batch in dataloader:
         print(batch)
-        input_ids = batch['input_ids']
-        attention_mask = batch['attention_mask']
-        labels = batch['labels']
-        print(input_ids)
-        print(attention_mask)
-        print(labels)
-        print(input_ids.shape, attention_mask.shape, labels.shape)
+        outputs = rwkv7speech_model.forward(inputs_embeds=batch['input_embs'],attention_mask=batch['attention_mask'],labels=batch['labels'],use_cache=False)
+        print(outputs)
         break
-
-    
+    print(f'--Test collate_fn_simple--')
+    collate_fn_simple = partial(collate_fn_simple,tokenizer=tokenizer)
+    dataloader = DataLoader(dataset,batch_size=2,collate_fn=collate_fn_simple,shuffle=True)
+    for batch in dataloader:
+        print(batch)
+        print(batch['semantic_tokens_ids'].tolist())
+        print("--------------------------------")
+        processed_batch = process_single_batch(batch, rwkv7speech_model)
+        print(processed_batch['labels'].tolist())
+        outputs = rwkv7speech_model.forward(inputs_embeds=processed_batch['input_embs'],attention_mask=processed_batch['attention_mask'],labels=processed_batch['labels'],use_cache=False)
+        print(outputs)
+        break

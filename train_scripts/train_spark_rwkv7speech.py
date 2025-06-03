@@ -16,17 +16,15 @@ from typing import Optional
 from functools import partial
 import time  
 import regex as re
-from data.utils.spark_dataset import load_spark_jsonl_dataset, collate_fn,convert_to_tts_format
+from data.utils.spark_dataset import load_spark_jsonl_dataset, collate_fn_for_rwkv7speech, collate_fn_simple, process_single_batch
 from sparktts.models.audio_tokenizer import BiCodecTokenizer
 import soundfile as sf
 from pathlib import Path
 import numpy as np
+from inference.rwkv7speech_inference import create_inputs
 
 logger = logging.getLogger(__name__)
 demo_text = "我们都是来自同一个地球，同一个梦想！同一片蓝天下！"
-def generate_tts_text(text,global_str):
-    formatted_text = f"<tts><text_start>{text}<text_end><global_start>{global_str}<global_end><sementic_start>"
-    return formatted_text
 @dataclass
 class ScriptArguments:
     """Command line arguments for training script"""
@@ -223,15 +221,11 @@ def get_lr_scheduler(optimizer, total_steps, warmup_steps, learning_rate, learni
     
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-def train_step(model_engine, batch):
+def train_step(model_engine, input_ids_embs,attention_mask,labels):
     """执行一步训练"""
-    # 将数据移动到正确的设备
-    input_ids = batch['input_ids'].to(model_engine.device)
-    attention_mask = batch['attention_mask'].to(model_engine.device)
-    labels = batch['labels'].to(model_engine.device)
     
     # 前向传播
-    outputs = model_engine(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+    outputs = model_engine(inputs_embeds=input_ids_embs, attention_mask=attention_mask, labels=labels)
     loss = outputs.loss
     
     return {
@@ -260,29 +254,23 @@ def load_global_tokens(audio_tokenizer, directory, device):
         characters.append(parent_dir.split('/')[-1])
     return all_global_tokens, all_global_tokens_ids, characters
 
-def generate_demo(model_engine, audio_tokenizer, text_tokenizer, demo_text, global_tokens_str, global_tokens_ids, device, eos_token_id, output_dir, epoch, step, character):
+def generate_demo(model_engine, text_tokenizer, demo_text, global_tokens_ids, device, eos_token_id, output_dir, epoch, step, character):
     """生成demo音频"""
     # 将模型设置为评估模式
     model_engine.eval()
     
-    # 根据 DeepSpeed stage 处理模型
-    # 在 stage3 中，我们需要使用 model_engine 而不是 model_engine.module
-    # 因为参数分布在不同的进程中
-    model = model_engine
-    
     # 准备输入文本
-    input_text = generate_tts_text(demo_text, global_tokens_str)
-    print(f'input_text: {input_text}')
+    print(f'input_text: {demo_text}')
+    print(f'character: {character},device: {device},eos_token_id: {eos_token_id}')
     
     # 准备模型输入
-    model_inputs = text_tokenizer(input_text, return_tensors="pt").to(device)
-    print(model_inputs)
-    len_of_input = model_inputs['input_ids'].shape[1]
+    input_ids_embs, attention_mask = create_inputs([demo_text], [global_tokens_ids], [[]], text_tokenizer, model_engine)
     
     with torch.no_grad():
-        # 使用 model_engine 进行生成，它会自动处理分布式参数
+        # 使用 model_engine 进行生成
         generated_tokens = model_engine.generate(
-            **model_inputs,
+            inputs_embeds=input_ids_embs,
+            attention_mask=attention_mask,
             max_length=2048,
             do_sample=True,
             top_k=50,
@@ -290,31 +278,23 @@ def generate_demo(model_engine, audio_tokenizer, text_tokenizer, demo_text, glob
             eos_token_id=eos_token_id,
         )[0]
     
-    generated_tokens = generated_tokens[len_of_input:]
     print(f'generated_tokens: {generated_tokens}')
-    predicts = text_tokenizer.decode(generated_tokens)
-    print(f'predicts: {predicts}')
-    predicts = re.findall(r"<|bicodec_semantic_(\d+)|>", predicts)
-    print(f'predicts: {predicts}')
-    pred_semantic_ids = [int(p) for p in predicts if p.isdigit()]
+    pred_semantic_ids = generated_tokens.tolist()
     if len(pred_semantic_ids) == 0:
-        print(f'pred_semantic_ids is empty, predicts: {predicts}')
+        print(f'pred_semantic_ids is empty, pred_semantic_ids: {pred_semantic_ids}')
     else:
-        pred_semantic_ids = torch.tensor([pred_semantic_ids], dtype=torch.long).to(device)
         print(f'pred_semantic_ids: {pred_semantic_ids}')
-        global_tokens_ids = torch.tensor(global_tokens_ids, dtype=torch.long).unsqueeze(0).to(device)
-        print(f'global_tokens_ids: {global_tokens_ids.shape}, pred_semantic_ids: {pred_semantic_ids.shape}')
-        print(f'global_tokens_ids: {global_tokens_ids}')
         
         json_output_data = {
-            "global_tokens_ids": global_tokens_ids.tolist(),
-            "pred_semantic_ids": pred_semantic_ids.tolist(),
+            "global_tokens_ids": global_tokens_ids,
+            "pred_semantic_ids": pred_semantic_ids,
             "text": demo_text
         }
-        with open(os.path.join(output_dir, f"demo_epoch_{epoch}_step_{step}_{character}.json"), "w") as f:
+        output_file = os.path.join(output_dir, f"demo_epoch_{epoch}_step_{step}_{character}.json")
+        with open(output_file, "w") as f:
             json.dump(json_output_data, f)
         
-        logger.info(f"Generated demo saved to {output_dir}")
+        logger.info(f"Generated demo saved to {output_file}")
     
     # 恢复训练模式
     model_engine.train()
@@ -345,7 +325,7 @@ def collate_fn_audio(batch, tokenizer, max_length, pad_to_max_length, semantic_s
         # 构建输入文本
         text = item['json']['text']
         global_str = "".join([f"<|bicodec_global_{token}|>" for token in global_tokens])
-        input_text = generate_tts_text(text, global_str)
+        input_text = text
         
         texts.append(input_text)
         global_tokens_list.append(global_tokens)
@@ -426,7 +406,6 @@ def main():
         logger.info(f"Initializing audio tokenizer and loading demo data from {args.demo_dir}")
         demo_audio_tokenizer = BiCodecTokenizer(args.spark_model_dir, device=device)
         all_global_tokens, all_global_tokens_ids, characters = load_global_tokens(demo_audio_tokenizer, args.demo_dir, device)
-        eos_token_id = tokenizer.encode("<sementic_end>")[0]
         logger.info(f"Loaded {len(characters)} demo characters")
         del demo_audio_tokenizer
         torch.cuda.empty_cache()
@@ -462,17 +441,12 @@ def main():
         dataset = load_dataset('webdataset', data_files=filtered_tars, split='train')
     else:
         logger.info(f"Loading dataset from {args.data_file}")
-        dataset = load_spark_jsonl_dataset(args.data_file)
-        dataset = dataset.map(convert_to_tts_format,
-                            num_proc=4,
-                            remove_columns=dataset['train'].column_names,
-                            desc="Converting to TTS format"
-                            )
+        dataset = load_spark_jsonl_dataset(args.data_file)['train']
     
     # Setup data loading
     logger.info(f"Creating DataLoader with batch size {args.per_device_train_batch_size}, world size {world_size}")
     sampler = DistributedSampler(
-        dataset['train'],
+        dataset,
         num_replicas=world_size,
         rank=local_rank,
         shuffle=True,
@@ -480,30 +454,7 @@ def main():
     )
     sementic_start_id = tokenizer.encode("<sementic_start>")[0]
     
-    # 根据数据源选择不同的 collate 函数
-    if args.webdataset_dir is not None:
-        data_collator = partial(collate_fn_audio, 
-                              tokenizer=tokenizer, 
-                              max_length=args.max_length, 
-                              pad_to_max_length=False, 
-                              semantic_start_id=sementic_start_id,
-                              audio_tokenizer=audio_tokenizer)
-    else:
-        data_collator = partial(collate_fn, 
-                              tokenizer=tokenizer, 
-                              max_length=args.max_length, 
-                              pad_to_max_length=False, 
-                              semantic_start_id=sementic_start_id)
     
-    dataloader = DataLoader(
-        dataset['train'],
-        batch_size=args.per_device_train_batch_size,
-        sampler=sampler,
-        num_workers=4,
-        pin_memory=True,
-        drop_last=True,
-        collate_fn=data_collator
-    )
     
     # Load DeepSpeed config
     if args.deepspeed_config:
@@ -548,14 +499,14 @@ def main():
                 },
                 "zero_force_ds_cpu_initialization": True,
                 "gradient_checkpointing": args.gradient_checkpointing,
-                "dump_state": True
+                "dump_state": False
             }
         
     # Init model with deepspeed
     if is_main_process:
         logger.info(f"Initializing model with DeepSpeed config")
     model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.bfloat16, trust_remote_code=True)
-    
+    eos_token_id = model.config.vocab_size - 1
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
     model.train()
@@ -584,9 +535,12 @@ def main():
         del model_ds_config["zero_optimization"]["offload_param"]
     if not args.ds_optimizer_offload:
         del model_ds_config["zero_optimization"]["offload_optimizer"]
-        
-    # 在初始化DeepSpeed之前计算总步数
-    total_steps = len(dataloader) * args.num_epochs
+
+    # 计算总步数
+    total_steps = len(dataset) * args.num_epochs // (world_size * args.per_device_train_batch_size)
+    if is_main_process:
+        logger.info(f"Total steps: {total_steps}")
+        logger.info("Model initialized")
     
     # 创建自定义的学习率调度器
     lr_scheduler = get_lr_scheduler(
@@ -603,10 +557,34 @@ def main():
             optimizer=optimizer,
             lr_scheduler=lr_scheduler
     )
-    if is_main_process:
-        logger.info("Model initialized")
-    del model
     
+    # 在deepspeed初始化完成后删除原始model
+    del model
+
+    # 根据数据源选择不同的 collate 函数
+    if args.webdataset_dir is not None:
+        data_collator = partial(collate_fn_audio, 
+                              tokenizer=tokenizer, 
+                              max_length=args.max_length, 
+                              pad_to_max_length=False, 
+                              semantic_start_id=sementic_start_id,
+                              audio_tokenizer=audio_tokenizer)
+    else:
+        data_collator = partial(collate_fn_simple, 
+                              tokenizer=tokenizer,
+                              max_length=args.max_length,
+                              pad_to_max_length=False)
+    
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.per_device_train_batch_size,
+        sampler=sampler,
+        num_workers=4,
+        pin_memory=True,
+        drop_last=True,
+        collate_fn=data_collator
+    )
+        
     if is_main_process:
         from tqdm import tqdm
         pbar = tqdm(total=len(dataloader))
@@ -635,30 +613,26 @@ def main():
         sampler.set_epoch(time_seed)  # 使用时间戳作为种子
         
         for batch_idx, batch in enumerate(dataloader):
-            if is_main_process:
-                input_ids_shape = batch['input_ids'].shape
-                attention_mask_shape = batch['attention_mask'].shape
-                labels_shape = batch['labels'].shape
-                logger.debug(f'input_ids_shape: {input_ids_shape} attention_mask_shape: {attention_mask_shape} labels_shape: {labels_shape} at batch_idx: {batch_idx}')
+            # 使用 process_single_batch 处理数据
+            processed_batch = process_single_batch(batch, model_engine)
             
-            output = train_step(model_engine, batch)
+            if is_main_process and batch_idx == 0:
+                print(f'input_embs shape: {processed_batch["input_embs"].shape}')
+                print(f'attention_mask shape: {processed_batch["attention_mask"].shape}')
+                print(f'labels shape: {processed_batch["labels"].shape}')
+            
+            output = train_step(model_engine, processed_batch["input_embs"], processed_batch["attention_mask"], processed_batch["labels"])
             loss = output['loss']
             global_steps += 1
             
             # 生成 demo
             if is_main_process and args.demo_dir and global_steps % args.demo_every_steps == 0 and global_steps > 0:
                 logger.info(f"Generating demo at epoch {epoch}, step {batch_idx}")
-                print(f'batch["input_ids"]: {batch["input_ids"]} shape: {batch["input_ids"].shape}')
-                print(f'batch["attention_mask"]: {batch["attention_mask"]} shape: {batch["attention_mask"].shape}')
-                print(f'batch["labels"]: {batch["labels"]} shape: {batch["labels"].shape}')
-                print(f'eos_token_id: {eos_token_id},characters: {characters},demo_text: {demo_text},device: {device},output_dir: {args.output_dir},epoch: {epoch},batch_idx: {batch_idx}')
                 for global_tokens_str, global_tokens_ids, character in zip(all_global_tokens, all_global_tokens_ids, characters):
                     generate_demo(
                         model_engine,
-                        audio_tokenizer,
                         tokenizer,
                         demo_text,
-                        global_tokens_str,
                         global_tokens_ids,
                         device,
                         eos_token_id,

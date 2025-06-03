@@ -181,7 +181,7 @@ pydantic==2.10.6
 pydantic_core==2.27.2
 pydub==0.25.1
 Pygments==2.19.1
-pynini @ file:///home/conda/feedstock_root/build_artifacts/pynini_1706391756593/work
+pynini==2.1.5
 pyparsing==3.2.1
 pyperclip==1.9.0
 PySocks==1.7.1
