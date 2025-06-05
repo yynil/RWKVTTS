@@ -27,10 +27,11 @@ class RWKV7ForSpeech(RWKV7ForCausalLM):
         self.criterion = None
         self.text_embedder = nn.Embedding(config.text_vocab_size, config.hidden_size)
         self.global_embedder = nn.Embedding(config.audio_global_vocab_size, config.hidden_size)#Spark 0.5B global token size is 4096
-        #TTS Tag includes GLOBAL=0, SEMANTIC=1
-        self.tts_tag_embedder = nn.Embedding(2, config.hidden_size)
+        #TTS Tag includes GLOBAL=0, SEMANTIC=1,START_TTS=2
+        self.tts_tag_embedder = nn.Embedding(3, config.hidden_size)
         # Initialize weights and apply final processing
         self.post_init()
+        self.dropout = torch.nn.Dropout(0.02)
 
     def get_input_embeddings(self):
         return self.model.embeddings
@@ -120,7 +121,8 @@ class RWKV7ForSpeech(RWKV7ForCausalLM):
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
+        if self.training and inputs_embeds is not None:
+            inputs_embeds = self.dropout(inputs_embeds)
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,

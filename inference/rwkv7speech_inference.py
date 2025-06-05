@@ -51,7 +51,8 @@ def create_inputs(texts: List[str],global_tokens_ids: List[List[int]],semantic_t
         semantic_tokens_embs = llm.model.embeddings(torch.tensor([semantic_tokens_id],dtype=torch.long,device=llm.device))#1,len_of_semantic_tokens_ids,C
         tts_tag_embedder_0 = llm.tts_tag_embedder(torch.tensor([[0]],dtype=torch.long,device=llm.device))#1,C
         tts_tag_embedder_1 = llm.tts_tag_embedder(torch.tensor([[1]],dtype=torch.long,device=llm.device))#1,C
-        input_ids_embs = torch.cat([input_ids_embs,tts_tag_embedder_0,global_tokens_embs,tts_tag_embedder_1,semantic_tokens_embs],dim=1)
+        tts_tag_embedder_2 = llm.tts_tag_embedder(torch.tensor([[2]],dtype=torch.long,device=llm.device))#1,C
+        input_ids_embs = torch.cat([tts_tag_embedder_2,input_ids_embs,tts_tag_embedder_0,global_tokens_embs,tts_tag_embedder_1,semantic_tokens_embs],dim=1)
         input_ids_embs_list.append(input_ids_embs)
         max_length = max(max_length,input_ids_embs.shape[1])
     #left padding and create attention mask
@@ -65,30 +66,6 @@ def create_inputs(texts: List[str],global_tokens_ids: List[List[int]],semantic_t
     input_ids_embs = torch.cat(input_ids_embs_list,dim=0)
     return input_ids_embs,attention_mask
 
-def compose_input(input_ids,attention_mask,global_tokens_ids,semantic_tokens_ids,llm):
-    """
-    The tts input is composed as the following format:
-    0. input_ids_embs: converted by llm.text_embedder(input_ids)
-    1. llm.tts_tag_embedder(0) : start of global tokens
-    2. llm.global_embedder(global_tokens_ids)
-    3. llm.tts_tag_embedder(1) : end of global tokens
-    4. llm.model.embeddings(semantic_tokens_ids): prompted audio tokens
-    """
-    B,T = input_ids.shape
-    input_ids_embs = llm.text_embedder(input_ids)#B,T,C
-    global_tokens_embs = llm.global_embedder(global_tokens_ids)#B,32,C
-    semantic_tokens_embs = llm.model.embeddings(semantic_tokens_ids)#B,T,C
-    tts_tag_embedder_0 = llm.tts_tag_embedder(torch.tensor(0).to(device))#1,C
-    #repeat tts_tag_embedder_0 tts_tag_embedder_1 to B,1,C
-    tts_tag_embedder_0 = tts_tag_embedder_0.repeat(B,1,1)
-    tts_tag_embedder_1 = llm.tts_tag_embedder(torch.tensor(1).to(device))#1,C
-    tts_tag_embedder_1 = tts_tag_embedder_1.repeat(B,1,1)
-    _,semantic_T = semantic_tokens_ids.shape
-    _,global_T = global_tokens_ids.shape
-    input_ids_embs = torch.cat([input_ids_embs,tts_tag_embedder_0,global_tokens_embs,tts_tag_embedder_1,semantic_tokens_embs],dim=1)
-    #left padding's attention mask 
-    attention_mask = torch.cat([attention_mask,torch.ones(B,1,dtype=torch.long).to(device),torch.ones(B,global_T,dtype=torch.long).to(device),torch.ones(B,1,dtype=torch.long).to(device),torch.ones(B,semantic_T,dtype=torch.long).to(device)],dim=1)
-    return input_ids_embs,attention_mask
 
 if __name__ == "__main__":
     model_dir = '/home/yueyulin/models/Spark-TTS-0.5B/'
@@ -109,12 +86,7 @@ if __name__ == "__main__":
     print(all_global_tokens_ids)
     print(characters)
 
-    input_ids = model_inputs['input_ids'].to(device)
-    attention_mask = model_inputs['attention_mask'].to(device)
-    semantic_tokens_ids = torch.randint(0,8192,size=(input_ids.shape[0],10))
-    global_tokens_ids = torch.tensor([all_global_tokens_ids[0],all_global_tokens_ids[1]]).to(device)
-    semantic_tokens_ids = semantic_tokens_ids.to(device)
-    input_ids_embs,attention_mask = compose_input(input_ids,attention_mask,global_tokens_ids,semantic_tokens_ids,llm)
+    input_ids_embs,attention_mask = create_inputs([text[0]],[all_global_tokens_ids[0]],[[]],tokenizer,llm)
     
     print(input_ids_embs.shape)
     print(attention_mask.shape)

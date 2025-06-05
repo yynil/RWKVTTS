@@ -16,7 +16,7 @@ from typing import Optional
 from functools import partial
 import time  
 import regex as re
-from data.utils.spark_dataset import load_spark_jsonl_dataset, collate_fn_for_rwkv7speech, collate_fn_simple, process_single_batch
+from data.utils.spark_dataset import load_spark_jsonl_dataset, collate_fn_for_rwkv7speech, collate_fn_simple, process_single_batch, process_single_batch_culens
 from sparktts.models.audio_tokenizer import BiCodecTokenizer
 import soundfile as sf
 from pathlib import Path
@@ -156,6 +156,16 @@ class ScriptArguments:
         metadata={"help": "Generate demo every N steps"}
     )
 
+    use_culens: bool = field(
+        default=False,
+        metadata={"help": "Use cu_seqlens"}
+    )
+
+    max_cu_seqlens: int = field(
+        default=8192,
+        metadata={"help": "Max cu_seqlens"}
+    )
+
 def setup_logging(local_rank):
     """Configure logging"""
     if local_rank <= 0:
@@ -221,11 +231,14 @@ def get_lr_scheduler(optimizer, total_steps, warmup_steps, learning_rate, learni
     
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-def train_step(model_engine, input_ids_embs,attention_mask,labels):
+def train_step(model_engine, input_embs,labels,cu_seqlens=None,attention_mask=None):
     """执行一步训练"""
     
     # 前向传播
-    outputs = model_engine(inputs_embeds=input_ids_embs, attention_mask=attention_mask, labels=labels)
+    if cu_seqlens is not None:
+        outputs = model_engine(inputs_embeds=input_embs, cu_seqlens=cu_seqlens, labels=labels)
+    else:
+        outputs = model_engine(inputs_embeds=input_embs, attention_mask=attention_mask, labels=labels)
     loss = outputs.loss
     
     return {
@@ -494,7 +507,7 @@ def main():
                     "allgather_partitions": True,
                     "reduce_scatter": True,
                     "reduce_bucket_size": 5e6,
-                    "overlap_comm": True,
+                    "overlap_comm": False,
                     "contiguous_gradients": True
                 },
                 "zero_force_ds_cpu_initialization": True,
@@ -603,7 +616,8 @@ def main():
     total_steps = 0
     all_tokens = 0
     global_steps = 0
-    
+    #We do drop out at the training loop which is a lack of feature in the model
+    dropout = torch.nn.Dropout(0.02)
     for epoch in range(args.num_epochs):
         if is_main_process:
             update_time = time.time()
@@ -614,15 +628,20 @@ def main():
         
         for batch_idx, batch in enumerate(dataloader):
             # 使用 process_single_batch 处理数据
-            processed_batch = process_single_batch(batch, model_engine)
+            if args.use_culens:
+                processed_batch = process_single_batch_culens(batch, model_engine,eos_token_id,args.max_cu_seqlens)
+            else:
+                processed_batch = process_single_batch(batch, model_engine,eos_token_id)
             
             if is_main_process and batch_idx == 0:
                 print(f'input_embs shape: {processed_batch["input_embs"].shape}')
-                print(f'attention_mask shape: {processed_batch["attention_mask"].shape}')
+                print(f'attention_mask shape: {processed_batch["attention_mask"].shape}' if 'attention_mask' in processed_batch else 'no attention_mask')
                 print(f'labels shape: {processed_batch["labels"].shape}')
-            
-            output = train_step(model_engine, processed_batch["input_embs"], processed_batch["attention_mask"], processed_batch["labels"])
+                print(f'cu_seqlens shape: {processed_batch["cu_seqlens"].shape}' if 'cu_seqlens' in processed_batch else 'no cu_seqlens')
+            output = train_step(model_engine, **processed_batch)
             loss = output['loss']
+            if is_main_process and batch_idx == 0:
+                print(f'loss: {loss}')
             global_steps += 1
             
             # 生成 demo
@@ -683,7 +702,7 @@ def main():
                 
                 # 计算平均值
                 avg_loss = total_loss / total_steps
-                tokens = batch['input_ids'].numel() * world_size
+                tokens = processed_batch["input_embs"].shape[1] * world_size
                 all_tokens += tokens
                 kts = tokens / elapsed_time / 1e3
                 

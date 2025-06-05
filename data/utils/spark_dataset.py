@@ -108,7 +108,59 @@ def collate_fn(batch, tokenizer, pad_to_max_length=True, max_length=2048, drop_p
         "labels": labels
     }
 
-def process_single_batch(batch, rwkv7speech_model):
+def process_single_batch_culens(batch, rwkv7speech_model,eos_token_id=8192,max_cu_seqlens=8192):
+    """
+    处理单个batch，生成与collate_fn_for_rwkv7speech相同格式的输出
+    
+    Args:
+        batch: 包含input_ids, attention_mask_input_ids, global_tokens_ids, global_tokens_attention_mask,
+              semantic_tokens_ids, semantic_tokens_attention_mask的字典
+        rwkv7speech_model: 模型
+    
+    Returns:
+        包含input_embs, labels,cu_seqlens的字典
+    """
+    device = rwkv7speech_model.device
+    batch_size = batch['input_ids'].shape[0]
+    input_ids_embs_list = []
+    labels = []
+    cu_seqlens = [0]
+    for i in range(batch_size):
+        text_length = batch['attention_mask_input_ids'][i].sum().item()
+        input_ids = batch['input_ids'][i, -text_length:]
+        global_length = batch['global_tokens_attention_mask'][i].sum().item()
+        global_ids = batch['global_tokens_ids'][i, -global_length:]
+        semantic_length = batch['semantic_tokens_attention_mask'][i].sum().item()
+        semantic_ids = batch['semantic_tokens_ids'][i, -semantic_length:]
+
+        # 获取embeddings
+        input_ids_embs = rwkv7speech_model.text_embedder(input_ids.to(device))#T,D
+        global_tokens_embs = rwkv7speech_model.global_embedder(global_ids.to(device))#G_T,D
+        semantic_tokens_embs = rwkv7speech_model.model.embeddings(semantic_ids.to(device))#S_T,D
+        
+        # 获取tts tag embeddings
+        tts_tag_embedder_0 = rwkv7speech_model.tts_tag_embedder(torch.tensor([0], dtype=torch.long, device=device))#1,D
+        tts_tag_embedder_1 = rwkv7speech_model.tts_tag_embedder(torch.tensor([1], dtype=torch.long, device=device))#1,D
+        tts_tag_embedder_2 = rwkv7speech_model.tts_tag_embedder(torch.tensor([2], dtype=torch.long, device=device))#1,D
+        
+        # 拼接embeddings
+        input_ids_embs = torch.cat([tts_tag_embedder_2,input_ids_embs, tts_tag_embedder_0, global_tokens_embs, tts_tag_embedder_1, semantic_tokens_embs], dim=0)#T+1+G_T+1+S_T,D
+        input_ids_embs_list.append(input_ids_embs)
+        my_length = input_ids_embs.shape[0]
+        my_label = torch.full((my_length,),-100,dtype=torch.long,device=device)
+        my_label[-semantic_length-1:-1] = semantic_ids
+        my_label[-1] = eos_token_id
+        labels.append(my_label)
+        last_length = cu_seqlens[-1]
+        if last_length+my_length > max_cu_seqlens:
+            break
+        cu_seqlens.append(last_length+my_length)
+    input_embs = torch.cat(input_ids_embs_list,dim=0)
+    labels = torch.cat(labels,dim=0)
+    cu_seqlens = torch.tensor(cu_seqlens,dtype=torch.long,device=device)
+
+    return {"input_embs": input_embs.unsqueeze(0),"labels": labels.unsqueeze(0),"cu_seqlens": cu_seqlens}
+def process_single_batch(batch, rwkv7speech_model,eos_token_id=8192):
     """
     处理单个batch，生成与collate_fn_for_rwkv7speech相同格式的输出
     
@@ -148,9 +200,9 @@ def process_single_batch(batch, rwkv7speech_model):
         # 获取tts tag embeddings
         tts_tag_embedder_0 = rwkv7speech_model.tts_tag_embedder(torch.tensor([[0]], dtype=torch.long, device=device))
         tts_tag_embedder_1 = rwkv7speech_model.tts_tag_embedder(torch.tensor([[1]], dtype=torch.long, device=device))
-        
+        tts_tag_embedder_2 = rwkv7speech_model.tts_tag_embedder(torch.tensor([[2]], dtype=torch.long, device=device))
         # 拼接embeddings
-        input_ids_embs = torch.cat([input_ids_embs, tts_tag_embedder_0, global_tokens_embs, tts_tag_embedder_1, semantic_tokens_embs], dim=1)
+        input_ids_embs = torch.cat([tts_tag_embedder_2,input_ids_embs, tts_tag_embedder_0, global_tokens_embs, tts_tag_embedder_1, semantic_tokens_embs], dim=1)
         input_ids_embs_list.append(input_ids_embs)
         max_length = max(max_length, input_ids_embs.shape[1])
     
@@ -177,7 +229,8 @@ def process_single_batch(batch, rwkv7speech_model):
         
         # 设置labels：从tts_tag_embedder_1的位置开始预测
         # 即从semantic_start - 1的位置开始设置labels
-        labels[i, semantic_start - 1:semantic_start + semantic_length - 1] = semantic_ids.to(device)
+        labels[i, semantic_start-1:semantic_start -1 + semantic_length ] = semantic_ids
+        labels[i,-1]=eos_token_id
     
     return {
         "input_embs": input_embs,
@@ -185,7 +238,7 @@ def process_single_batch(batch, rwkv7speech_model):
         "labels": labels
     }
 
-def collate_fn_simple(batch, tokenizer, pad_to_max_length=True, max_length=2048,semantic_eos_token_id=8192):
+def collate_fn_simple(batch, tokenizer, pad_to_max_length=True, max_length=2048):
     """
     简单的数据整理函数，处理文本、全局标记和语义标记的对齐，使用左对齐方式（左边填充）
     所有填充值统一使用0，由attention mask决定有效位置
@@ -208,7 +261,7 @@ def collate_fn_simple(batch, tokenizer, pad_to_max_length=True, max_length=2048,
         input_ids = tokenizer.encode(sample['text'])
         input_ids_list.append(input_ids)
         global_tokens_list.append(sample['global_tokens'])
-        semantic_tokens_list.append(sample['semantic_tokens']+[semantic_eos_token_id])
+        semantic_tokens_list.append(sample['semantic_tokens'])
     
     # 找到最长的序列长度
     max_text_length = max(len(ids) for ids in input_ids_list)
@@ -271,33 +324,50 @@ def collate_fn_simple(batch, tokenizer, pad_to_max_length=True, max_length=2048,
     }
 
 if __name__ == "__main__":
-    dataset = load_spark_jsonl_dataset("/home/yueyulin/data/Emilia/000_999/")['train']
+    dataset = load_spark_jsonl_dataset("/home/yueyulin/data/Emilia/partitioned/")['train']
     print(dataset)
     model_dir = '/home/yueyulin/models/rwkv7-0.1B-g1-respark-speech/'
+    model_dir = '/home/yueyulin/models/rwkv7-191M-world-respark'
     device = "cuda:3"
     rwkv7speech_model = AutoModelForCausalLM.from_pretrained(model_dir,trust_remote_code=True).bfloat16().to(device)
     rwkv7speech_model.train()
     tokenizer = AutoTokenizer.from_pretrained(model_dir,trust_remote_code=True)
     print(rwkv7speech_model)
     from functools import partial
-    collate_fn_for_rwkv7speech = partial(collate_fn_for_rwkv7speech,tokenizer=tokenizer,rwkv7speech_model=rwkv7speech_model)
-    
     from torch.utils.data import DataLoader
-    dataloader = DataLoader(dataset,batch_size=2,collate_fn=collate_fn_for_rwkv7speech,shuffle=True)
-    for batch in dataloader:
-        print(batch)
-        outputs = rwkv7speech_model.forward(inputs_embeds=batch['input_embs'],attention_mask=batch['attention_mask'],labels=batch['labels'],use_cache=False)
-        print(outputs)
-        break
-    print(f'--Test collate_fn_simple--')
+    from torch.optim import AdamW
+    
+    # 定义优化器
+    optimizer = AdamW(rwkv7speech_model.parameters(), lr=1e-4)
+    
     collate_fn_simple = partial(collate_fn_simple,tokenizer=tokenizer)
-    dataloader = DataLoader(dataset,batch_size=2,collate_fn=collate_fn_simple,shuffle=True)
+    dataloader = DataLoader(dataset,batch_size=16,collate_fn=collate_fn_simple,shuffle=True)
+    rwkv7speech_model.gradient_checkpointing_enable()
     for batch in dataloader:
-        print(batch)
-        print(batch['semantic_tokens_ids'].tolist())
+        # print(batch)
+        # print(batch['semantic_tokens_ids'].tolist())
         print("--------------------------------")
         processed_batch = process_single_batch(batch, rwkv7speech_model)
-        print(processed_batch['labels'].tolist())
+        # print(processed_batch['labels'].tolist())
+        print(f'input_embs shape:{processed_batch["input_embs"].shape}, attention_mask shape:{processed_batch["attention_mask"].shape}, labels shape:{processed_batch["labels"].shape}')
+        
+        # 清零梯度
+        optimizer.zero_grad()
+        
         outputs = rwkv7speech_model.forward(inputs_embeds=processed_batch['input_embs'],attention_mask=processed_batch['attention_mask'],labels=processed_batch['labels'],use_cache=False)
         print(outputs)
+        outputs.loss.backward()
+        
+        # 更新参数
+        optimizer.step()
+
+        optimizer.zero_grad()
+        processed_batch = process_single_batch_culens(batch, rwkv7speech_model,max_cu_seqlens=4096)
+        print(processed_batch)
+        print(f'input_embs shape:{processed_batch["input_embs"].shape}, cu_seqlens shape:{processed_batch["cu_seqlens"].shape}, labels shape:{processed_batch["labels"].shape}')
+        outputs = rwkv7speech_model.forward(inputs_embeds=processed_batch['input_embs'],labels=processed_batch['labels'],use_cache=False,cu_seqlens=processed_batch['cu_seqlens'])
+        print(outputs)
+        outputs.loss.backward()
+        optimizer.step()
+        
         break
