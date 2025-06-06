@@ -229,7 +229,7 @@ def process_single_batch(batch, rwkv7speech_model,eos_token_id=8192):
         
         # 设置labels：从tts_tag_embedder_1的位置开始预测
         # 即从semantic_start - 1的位置开始设置labels
-        labels[i, semantic_start-1:semantic_start -1 + semantic_length ] = semantic_ids
+        labels[i, -semantic_length-1:-1] = semantic_ids
         labels[i,-1]=eos_token_id
     
     return {
