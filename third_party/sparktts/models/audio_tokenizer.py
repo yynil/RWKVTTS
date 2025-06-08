@@ -94,7 +94,7 @@ class BiCodecTokenizer:
             return_tensors="pt",
             padding=True,
             output_hidden_states=True,
-        ).input_values
+        ).input_values.to(self.feature_extractor.dtype)
         feat = self.feature_extractor(inputs.to(self.feature_extractor.device))
         feats_mix = (
             feat.hidden_states[11] + feat.hidden_states[14] + feat.hidden_states[16]

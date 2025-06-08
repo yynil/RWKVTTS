@@ -5,3 +5,5 @@ deepspeed --num_nodes 1 --num_gpus 4 train_scripts/train_spark_rwkv7speech.py --
 
 
 deepspeed --num_nodes 1 --num_gpus 4 train_scripts/train_spark_rwkv7speech.py --data_file /home/yueyulin/data/Emilia/000_999 --model_name /home/yueyulin/models/rwkv7-0.1B-g1-respark-speech/ --output_dir /home/yueyulin/tmp --per_device_train_batch_size 12 --max_length 2048 --gradient_checkpointing True --ds_stage 2 --spark_model_dir /home/yueyulin/models/Spark-TTS-0.5B/ --learning_rate 6e-4 --learning_rate_final 3e-4 --demo_every_steps 20000 --num_epochs 10
+
+deepspeed --num_nodes 1 --num_gpus 4 train_scripts/train_spark_rwkv7speech_multiple_dataset.py --webdataset_dir /external_data/yueyudata/voxbox_wids/ --model_name /home/yueyulin/models/rwkv7-0.1B-g1-respark-speech/ --output_dir /home/yueyulin/tmp --per_device_train_batch_size 16 --max_length 2048 --gradient_checkpointing True --ds_stage 2 --spark_model_dir /home/yueyulin/models/Spark-TTS-0.5B/ --learning_rate 6e-4 --learning_rate_final 3e-5 --demo_every_steps 20000 --num_epochs 10 --audio_model_dir /home/yueyulin/models/Spark-TTS-0.5B/
