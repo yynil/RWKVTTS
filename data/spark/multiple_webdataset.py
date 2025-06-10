@@ -319,6 +319,89 @@ def process_single_batch_with_audio_tokenizer(batch, rwkv7speech_model,audio_tok
         "attention_mask": attention_mask,
         "labels": labels
     }
+
+def process_single_batch_with_audio_tokenizer_culens(batch, rwkv7speech_model, audio_tokenizer, eos_token_id=8192, max_cu_seqlens=8192):
+    """
+    处理单个batch，使用累积序列长度（cu_seqlens）来管理序列长度
+    
+    Args:
+        batch: {
+            "input_ids": padded_input_ids,
+            "input_ids_len": padded_input_ids_len,
+            "audios": audios,
+            "texts": texts
+        }
+        rwkv7speech_model: 模型
+        audio_tokenizer: 音频分词器
+        eos_token_id: 结束标记ID
+        max_cu_seqlens: 最大累积序列长度
+    
+    Returns:
+        包含input_embs, labels, cu_seqlens的字典
+    """
+    device = rwkv7speech_model.device
+    batch_size = batch['input_ids'].shape[0]
+    input_ids_embs_list = []
+    labels = []
+    cu_seqlens = [0]
+    
+    for i in range(batch_size):
+        # 获取文本和音频数据
+        input_ids = batch['input_ids'][i]
+        audio_array = batch['audios'][i]
+        
+        # 使用音频分词器处理音频
+        global_tokens, semantic_tokens = audio_tokenizer.tokenize(audio_array)
+        # 确保维度正确
+        if len(global_tokens.shape) == 3:
+            global_tokens = global_tokens.squeeze(0).squeeze(0)  # [G]
+        elif len(global_tokens.shape) == 2:
+            global_tokens = global_tokens.squeeze(0)  # [G]
+            
+        if len(semantic_tokens.shape) == 3:
+            semantic_tokens = semantic_tokens.squeeze(0).squeeze(0)  # [S]
+        elif len(semantic_tokens.shape) == 2:
+            semantic_tokens = semantic_tokens.squeeze(0)  # [S]
+        
+        # 获取embeddings
+        input_ids_embs = rwkv7speech_model.text_embedder(input_ids.unsqueeze(0).to(device)).squeeze(0)  # [T, D]
+        global_tokens_embs = rwkv7speech_model.global_embedder(global_tokens.unsqueeze(0).to(device)).squeeze(0)  # [G, D]
+        semantic_tokens_embs = rwkv7speech_model.model.embeddings(semantic_tokens.unsqueeze(0).to(device)).squeeze(0)  # [S, D]
+        
+        # 获取tts tag embeddings
+        tts_tag_embedder_0 = rwkv7speech_model.tts_tag_embedder(torch.tensor([0], dtype=torch.long, device=device))  # [1, D]
+        tts_tag_embedder_1 = rwkv7speech_model.tts_tag_embedder(torch.tensor([1], dtype=torch.long, device=device))  # [1, D]
+        tts_tag_embedder_2 = rwkv7speech_model.tts_tag_embedder(torch.tensor([2], dtype=torch.long, device=device))  # [1, D]
+        
+        # 拼接embeddings
+        input_ids_embs = torch.cat([tts_tag_embedder_2, input_ids_embs, tts_tag_embedder_0, global_tokens_embs, tts_tag_embedder_1, semantic_tokens_embs], dim=0)  # [T+1+G+1+S, D]
+        input_ids_embs_list.append(input_ids_embs)
+        
+        # 创建标签
+        my_length = input_ids_embs.shape[0]
+        my_label = torch.full((my_length,), -100, dtype=torch.long, device=device)
+        semantic_length = semantic_tokens.shape[0]
+        my_label[-semantic_length-1:-1] = semantic_tokens
+        my_label[-1] = eos_token_id
+        labels.append(my_label)
+        
+        # 检查累积序列长度
+        last_length = cu_seqlens[-1]
+        if last_length + my_length > max_cu_seqlens:
+            break
+        cu_seqlens.append(last_length + my_length)
+    
+    # 合并所有embeddings和标签
+    input_embs = torch.cat(input_ids_embs_list, dim=0)  # [B, T+1+G+1+S, D]
+    labels = torch.cat(labels, dim=0)  # [B, T+1+G+1+S]
+    cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.long, device=device)
+    
+    return {
+        "input_embs": input_embs.unsqueeze(0),  # [B, T+1+G+1+S, D]
+        "labels": labels.unsqueeze(0),  # [B, T+1+G+1+S]
+        "cu_seqlens": cu_seqlens
+    }
+
 def process_single_batch(batch, rwkv7speech_model,eos_token_id=8192):
     """
     处理单个batch，生成与collate_fn_for_rwkv7speech相同格式的输出
@@ -485,15 +568,18 @@ def main_test():
     # 创建数据加载器
     dataloader = DataLoader(
         dataset,
-        batch_size=4,
+        batch_size=16,
         collate_fn=lambda x: collate_fn_with_tokenizer(x, tokenizer),
         shuffle=True
     )
     
     rwkv7speech_model = AutoModelForCausalLM.from_pretrained(rwkv_model_path,trust_remote_code=True)
-    rwkv7speech_model.to(device)
+    rwkv7speech_model.to(torch.bfloat16).to(device)
     print(rwkv7speech_model)
+    from torch.optim import AdamW   
+    optimizer = AdamW(rwkv7speech_model.parameters(), lr=1e-4)
     
+    rwkv7speech_model.train()
     # 测试数据加载
     for batch in dataloader:
         print("\n批次信息:")
@@ -508,6 +594,40 @@ def main_test():
         print(training_data['input_embs'].shape)
         print(training_data['attention_mask'].shape)
         print(training_data['labels'].shape)
+        b = training_data['input_embs'].shape[0]
+        all_length = 0
+        for i in range(b):
+            length = training_data['attention_mask'][i].sum().item()
+            print(f'length: {length}')
+            all_length += length
+        print(f'all_length: {all_length}')
+        optimizer.zero_grad()
+        outputs = rwkv7speech_model.forward(inputs_embeds=training_data['input_embs'],attention_mask=training_data['attention_mask'],labels=training_data['labels'],use_cache=False)
+        print(outputs)
+        outputs.loss.backward()
+        
+        # 更新参数
+        optimizer.step()
+
+        optimizer.zero_grad()
+        print('--------------------------------')
+        training_data = process_single_batch_with_audio_tokenizer_culens(batch, rwkv7speech_model,bicodec_tokenizer,eos_token_id=8192)
+        b = training_data['cu_seqlens'].shape[0]
+        print(training_data['input_embs'])
+        print(training_data['labels'])
+        print(training_data['cu_seqlens'])
+        print(training_data['input_embs'].shape)
+        print(training_data['labels'].shape)
+        print(training_data['cu_seqlens'].shape)
+        prev_len = 0
+        for i in range(b):
+            length = training_data['cu_seqlens'][i].item()
+            print(f'length: {length-prev_len}')
+            prev_len = length
+        outputs = rwkv7speech_model.forward(inputs_embeds=training_data['input_embs'],labels=training_data['labels'],use_cache=False,cu_seqlens=training_data['cu_seqlens'])
+        print(outputs)
+        outputs.loss.backward()
+        optimizer.step()
         break
 if __name__ == "__main__":
     main_test()

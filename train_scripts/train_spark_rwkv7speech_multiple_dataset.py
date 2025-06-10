@@ -16,7 +16,7 @@ from typing import Optional
 from functools import partial
 import time  
 import regex as re
-from data.spark.multiple_webdataset import MultipleWebDataset, collate_fn_with_tokenizer, process_single_batch_with_audio_tokenizer
+from data.spark.multiple_webdataset import MultipleWebDataset, collate_fn_with_tokenizer, process_single_batch_with_audio_tokenizer,process_single_batch_with_audio_tokenizer_culens
 from sparktts.models.audio_tokenizer import BiCodecTokenizer
 import soundfile as sf
 from pathlib import Path
@@ -194,11 +194,17 @@ def configure_optimizer(model, args):
     lr_decay = sorted(list(lr_decay))
     param_dict = {n: p for n, p in model.named_parameters()}
     
-    optim_groups = [{"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0}]
-    optim_groups.append({"params": [param_dict[n] for n in lr_2x], "weight_decay": 0.0, "my_lr_scale": 2.0})
-
+    optim_groups = [
+        {"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0, "name": "lr_1x"},
+        {"params": [param_dict[n] for n in lr_2x], "weight_decay": 0.0, "my_lr_scale": 2.0, "name": "lr_2x"}
+    ]
     if args.weight_decay > 0:
-        optim_groups.append({"params": [param_dict[n] for n in lr_decay], "weight_decay": args.weight_decay, "my_lr_scale": 1.0})
+        optim_groups.append({
+            "params": [param_dict[n] for n in lr_decay],
+            "weight_decay": args.weight_decay,
+            "my_lr_scale": 1.0,
+            "name": "lr_decay"
+        })
         adamw_mode = True
     else:
         adamw_mode = False
@@ -231,60 +237,66 @@ def save_checkpoint(model_engine, output_dir, epoch, step,logger):
     
     model_engine.save_checkpoint(output_dir)
 
-def get_lr_scheduler(optimizer, total_steps, warmup_steps, learning_rate, learning_rate_final, args):
-    """创建一个基于步数的学习率调度器，支持余弦衰减和预热，并考虑不同参数组的学习率缩放"""
+def update_learning_rate(optimizer, current_step, total_steps, warmup_steps, learning_rate, learning_rate_final,args,is_main_process):
+    """更新优化器中每个参数组的学习率"""
     import math
     
-    def lr_lambda(current_step):
-        # 计算基础学习率
-        if current_step < warmup_steps:
-            base_lr = 0.01 + 0.99 * current_step / warmup_steps
-        else:
-            progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
-            progress = max(0, min(1, progress))
-            lr_final_factor = learning_rate_final / learning_rate
-            base_lr = (0.5 + lr_final_factor / 2) + (0.5 - lr_final_factor / 2) * math.cos(math.pi * progress)
-        
-        # 返回一个函数，这个函数会根据参数组的不同返回不同的学习率
-        def get_group_lr(param_group):
-            lr_scale = param_group.get('my_lr_scale', 1.0)
-            group_lr = base_lr * lr_scale
-            
-            # 修改 weight_decay
-            if param_group.get('weight_decay', 0) > 0:
-                param_group['weight_decay'] = args.weight_decay  # 使用当前的 weight_decay 值
-            
-            # 记录每个参数组的学习率和权重衰减
-            if torch.distributed.get_rank() == 0:  # 只在主进程记录
-                # 计算参数组的统计信息
-                params = param_group['params']
-                total_params = sum(p.numel() for p in params)
-                
-                # 记录到 wandb
-                wandb.log({
-                    f"lr_group_{param_group.get('name', 'default')}": group_lr,
-                    f"wd_group_{param_group.get('name', 'default')}": param_group.get('weight_decay', 0),
-                    f"params_count_{param_group.get('name', 'default')}": total_params,
-                    "base_lr": base_lr,
-                    "step": current_step
-                })
-            
-            return group_lr
-        
-        return get_group_lr
+    # 计算基础学习率
+    if current_step < warmup_steps:
+        base_lr = learning_rate * (0.01 + 0.99 * current_step / warmup_steps)
+    else:
+        progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+        progress = max(0, min(1, progress))
+        lr_final_factor = learning_rate_final / learning_rate
+        base_lr = learning_rate * ((0.5 + lr_final_factor / 2) + (0.5 - lr_final_factor / 2) * math.cos(math.pi * progress))
     
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    # 更新每个参数组的学习率
+    for param_group in optimizer.param_groups:
+        if param_group.get('weight_decay', 0) > 0:
+            param_group['weight_decay'] = args.weight_decay
+        lr_scale = param_group.get('my_lr_scale', 1.0)
+        param_group['lr'] = base_lr * lr_scale
+        if is_main_process and current_step % 100 == 0:
+            print(f'param_group: {param_group["name"]} lr: {param_group["lr"]} weight_decay: {param_group["weight_decay"]}, params: {param_group["params"]}')
+
+def log_metrics(optimizer, loss, avg_loss, epoch, total_steps, kts, all_tokens, current_lr):
+    """记录训练指标到 wandb"""
+    # 记录基本训练指标
+    wandb.log({
+        "loss": loss.item(),
+        "avg_loss": avg_loss,
+        "epoch": epoch,
+        "step": total_steps,
+        "KT/s": kts,
+        "Gtokens": all_tokens/1e9,
+        "learning_rate": current_lr
+    })
+    
+    # 记录每个参数组的学习率和权重衰减
+    for param_group in optimizer.param_groups:
+        # 计算参数组的统计信息
+        params = param_group['params']
+        total_params = sum(p.numel() for p in params)
+        
+        # 记录到 wandb
+        wandb.log({
+            f"lr_group_{param_group.get('name', 'default')}": param_group['lr'],
+            f"wd_group_{param_group.get('name', 'default')}": param_group.get('weight_decay', 0),
+            f"params_count_{param_group.get('name', 'default')}": total_params
+        })
 
 def train_step(model_engine, input_embs,labels,cu_seqlens=None,attention_mask=None):
     """执行一步训练"""
     
     # 前向传播
     if cu_seqlens is not None:
-        outputs = model_engine(inputs_embeds=input_embs, cu_seqlens=cu_seqlens, labels=labels)
+        outputs = model_engine(inputs_embeds=input_embs, cu_seqlens=cu_seqlens, labels=labels,use_cache=False)
     else:
-        outputs = model_engine(inputs_embeds=input_embs, attention_mask=attention_mask, labels=labels)
+        outputs = model_engine(inputs_embeds=input_embs, attention_mask=attention_mask, labels=labels,use_cache=False)
     loss = outputs.loss
-    
+    if torch.isnan(loss) or torch.isinf(loss):
+        print(f'loss is nan or inf, loss: {loss}')
+        print(f'outputs: {outputs}')
     return {
         'loss': loss
     }
@@ -502,33 +514,11 @@ def main():
     optimizer = configure_optimizer(model, args)
     
     # Initialize DeepSpeed for main model
-    model_ds_config = ds_config.copy()
-    if not args.ds_param_offload:
-        del model_ds_config["zero_optimization"]["offload_param"]
-    if not args.ds_optimizer_offload:
-        del model_ds_config["zero_optimization"]["offload_optimizer"]
-
-    # 计算总步数
-    total_steps = len(dataset) * args.num_epochs // (world_size * args.per_device_train_batch_size)
-    if is_main_process:
-        logger.info(f"Total steps: {total_steps}")
-        logger.info("Model initialized")
-    
-    # 创建自定义的学习率调度器
-    lr_scheduler = get_lr_scheduler(
-        optimizer=optimizer,
-        total_steps=total_steps,
-        warmup_steps=args.warmup_steps,
-        learning_rate=args.learning_rate,
-        learning_rate_final=args.learning_rate_final,
-        args=args
-    )
-    model_engine, optimizer, _, scheduler = deepspeed.initialize(
+    model_engine, optimizer, _, _ = deepspeed.initialize(
             model=model,
-            config=model_ds_config,
+            config=ds_config,
             model_parameters=model.parameters(),
-            optimizer=optimizer,
-            lr_scheduler=lr_scheduler
+            optimizer=optimizer
     )
     
     # 在deepspeed初始化完成后删除原始model
@@ -550,8 +540,6 @@ def main():
     )
         
     if is_main_process:
-        from tqdm import tqdm
-        pbar = tqdm(total=len(dataloader))
         wandb.init(
             project=args.wandb_project,
             name=args.wandb_run_name,
@@ -572,21 +560,51 @@ def main():
 
     audio_tokenizer = BiCodecTokenizer(args.audio_model_dir, device=model_engine.device)
     for epoch in range(args.num_epochs):
+        model_engine.train()
         if is_main_process:
             update_time = time.time()
             logger.info(f"Epoch {epoch} starts training")
+            from tqdm import tqdm
+            pbar = tqdm(total=len(dataloader), desc=f"Epoch {epoch}")
         # 使用时间戳生成随机种子
         time_seed = int(time.time() * 1000) & 0xffffffff  # 获取毫秒级时间戳并转换为32位整数
         sampler.set_epoch(time_seed)  # 使用时间戳作为种子
         
         for batch_idx, batch in enumerate(dataloader):
-            # 使用 process_single_batch 处理数据
-            processed_batch = process_single_batch_with_audio_tokenizer(batch, model_engine, audio_tokenizer, eos_token_id)
+            # 更新学习率
+            update_learning_rate(
+                optimizer,
+                global_steps,
+                total_steps,
+                args.warmup_steps,
+                args.learning_rate,
+                args.learning_rate_final,
+                args,
+                is_main_process
+            )
             
+            # 使用 process_single_batch 处理数据
+            if args.use_culens:
+                processed_batch = process_single_batch_with_audio_tokenizer_culens(batch, model_engine, audio_tokenizer, eos_token_id)
+            else:
+                processed_batch = process_single_batch_with_audio_tokenizer(batch, model_engine, audio_tokenizer, eos_token_id)
+                maxium_tokens = 32768
+                current_batch_size,current_batch_seq_len,_ = processed_batch["input_embs"].shape
+                max_batch_size = maxium_tokens // current_batch_seq_len
+                if max_batch_size < current_batch_size:
+                    print(f'max_batch_size < current_batch_size, max_batch_size: {max_batch_size}, current_batch_size: {current_batch_size} shrink the batch size')
+                    processed_batch["input_embs"] = processed_batch["input_embs"][:max_batch_size]
+                    processed_batch["labels"] = processed_batch["labels"][:max_batch_size]
+                    processed_batch["attention_mask"] = processed_batch["attention_mask"][:max_batch_size]
             if is_main_process and batch_idx == 0:
                 print(f'input_embs shape: {processed_batch["input_embs"].shape}')
-                print(f'attention_mask shape: {processed_batch["attention_mask"].shape}' if 'attention_mask' in processed_batch else 'no attention_mask')
                 print(f'labels shape: {processed_batch["labels"].shape}')
+                if args.use_culens:
+                    print(f'cu_seqlens shape: {processed_batch["cu_seqlens"].shape}')
+                    print(f'cu_seqlens: {processed_batch["cu_seqlens"]}')
+                else:
+                    print(f'attention_mask shape: {processed_batch["attention_mask"].shape}')
+                    print(f'attention_mask: {processed_batch["attention_mask"]}')
             output = train_step(model_engine, **processed_batch)
             loss = output['loss']
             if is_main_process and batch_idx == 0:
@@ -622,7 +640,8 @@ def main():
                 # 使用一个安全的替代 loss 进行 backward
                 logger.info(f"NaN loss detected at batch {batch_idx}, using safe zero loss instead")
                 logger.info(f'batch data is {batch}')
-                safe_loss = loss * 0.0 
+                # safe_loss = loss * 0.0
+                # print(f'safe_loss: {safe_loss}')
                 if is_main_process:
                     logger.warning(f"NaN loss detected at batch {batch_idx}, using safe zero loss instead")
                     wandb.log({
@@ -632,8 +651,8 @@ def main():
                     })
                 
                 # 所有节点都执行 backward，但使用的是零梯度
-                model_engine.backward(safe_loss)
-                model_engine.step()  # 这步实际上不会改变参数，因为梯度是零
+                # model_engine.backward(safe_loss)
+                # model_engine.step()  # 这步实际上不会改变参数，因为梯度是零
             else:
                 # 正常情况，使用实际 loss
                 model_engine.backward(loss)
@@ -657,15 +676,7 @@ def main():
                 
                 # 记录到wandb
                 current_lr = optimizer.param_groups[0]['lr']
-                wandb.log({
-                    "loss": loss.item(),
-                    "avg_loss": avg_loss,
-                    "epoch": epoch,
-                    "step": total_steps,
-                    "KT/s": kts,
-                    "Gtokens": all_tokens/1e9,
-                    "learning_rate": current_lr
-                })
+                log_metrics(optimizer, loss, avg_loss, epoch, total_steps, kts, all_tokens, current_lr)
                 
                 pbar.update(1)
                 pbar.set_postfix({
@@ -680,6 +691,9 @@ def main():
             os.makedirs(epoch_checkpoint_dir,exist_ok=True)
             print(f'saving checkpoint to {epoch_checkpoint_dir}')
             model_engine.save_checkpoint(epoch_checkpoint_dir)
+        
+        if is_main_process:
+            pbar.close()
     
     # 训练结束后关闭wandb
     if is_main_process:
