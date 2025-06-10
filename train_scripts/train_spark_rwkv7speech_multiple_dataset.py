@@ -166,6 +166,11 @@ class ScriptArguments:
         metadata={"help": "Max cu_seqlens"}
     )
 
+    max_tokens_k: int = field(
+        default=32,
+        metadata={"help": "Maximum tokens in K units (e.g. 32 means 32K tokens)"}
+    )
+
 def setup_logging(local_rank):
     """Configure logging"""
     if local_rank <= 0:
@@ -588,7 +593,7 @@ def main():
                 processed_batch = process_single_batch_with_audio_tokenizer_culens(batch, model_engine, audio_tokenizer, eos_token_id)
             else:
                 processed_batch = process_single_batch_with_audio_tokenizer(batch, model_engine, audio_tokenizer, eos_token_id)
-                maxium_tokens = 32768
+                maxium_tokens = args.max_tokens_k * 1024  # 将 K 转换为实际 token 数
                 current_batch_size,current_batch_seq_len,_ = processed_batch["input_embs"].shape
                 max_batch_size = maxium_tokens // current_batch_seq_len
                 if max_batch_size < current_batch_size:
