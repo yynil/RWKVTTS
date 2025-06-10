@@ -177,22 +177,37 @@ def setup_logging(local_rank):
 
 def configure_optimizer(model, args):
     lr_1x = set()
+    lr_2x = set()
+    lr_decay = set()    
     for n, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        lr_1x.add(n)
+        if 'attn.w_lora.lora.2.bias' in n:
+            lr_2x.add(n)
+        elif (len(p.squeeze().shape) >= 2) and (args.weight_decay > 0) and (".weight" in n) and ("lora" not in n):
+            lr_decay.add(n)
+        else:
+            lr_1x.add(n)
 
     lr_1x = sorted(list(lr_1x))
+    lr_2x = sorted(list(lr_2x))
+    lr_decay = sorted(list(lr_decay))
     param_dict = {n: p for n, p in model.named_parameters()}
     
     optim_groups = [{"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0}]
+    optim_groups.append({"params": [param_dict[n] for n in lr_2x], "weight_decay": 0.0, "my_lr_scale": 2.0})
 
+    if args.weight_decay > 0:
+        optim_groups.append({"params": [param_dict[n] for n in lr_decay], "weight_decay": args.weight_decay, "my_lr_scale": 1.0})
+        adamw_mode = True
+    else:
+        adamw_mode = False
     if args.ds_optimizer_offload:
         from deepspeed.ops.adam import DeepSpeedCPUAdam
-        optimizer = DeepSpeedCPUAdam(optim_groups, lr=args.learning_rate, betas=(0.9, 0.95), eps=1e-18, bias_correction=True, adamw_mode=True, amsgrad=False,weight_decay=args.weight_decay)
+        optimizer = DeepSpeedCPUAdam(optim_groups, lr=args.learning_rate, betas=(0.9, 0.95), eps=1e-18, bias_correction=True, adamw_mode=adamw_mode, amsgrad=False,weight_decay=args.weight_decay)
     else:
         from deepspeed.ops.adam import FusedAdam
-        optimizer = FusedAdam(optim_groups, lr=args.learning_rate, betas=(0.9, 0.95), eps=1e-18, bias_correction=True, adam_w_mode=True, amsgrad=False, weight_decay=args.weight_decay)
+        optimizer = FusedAdam(optim_groups, lr=args.learning_rate, betas=(0.9, 0.95), eps=1e-18, bias_correction=True, adam_w_mode=adamw_mode, amsgrad=False, weight_decay=args.weight_decay)
   
     return optimizer
 
@@ -216,18 +231,47 @@ def save_checkpoint(model_engine, output_dir, epoch, step,logger):
     
     model_engine.save_checkpoint(output_dir)
 
-def get_lr_scheduler(optimizer, total_steps, warmup_steps, learning_rate, learning_rate_final):
-    """Create a linear learning rate scheduler that goes from learning_rate to learning_rate_final"""
-    from transformers import get_linear_schedule_with_warmup
+def get_lr_scheduler(optimizer, total_steps, warmup_steps, learning_rate, learning_rate_final, args):
+    """创建一个基于步数的学习率调度器，支持余弦衰减和预热，并考虑不同参数组的学习率缩放"""
+    import math
     
     def lr_lambda(current_step):
+        # 计算基础学习率
         if current_step < warmup_steps:
-            # 在预热阶段，从0线性增加到learning_rate
-            return float(current_step) / float(max(1, warmup_steps))
+            base_lr = 0.01 + 0.99 * current_step / warmup_steps
         else:
-            # 预热后，从learning_rate线性减少到learning_rate_final
             progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
-            return max(learning_rate_final / learning_rate, 1.0 - progress * (1.0 - learning_rate_final / learning_rate))
+            progress = max(0, min(1, progress))
+            lr_final_factor = learning_rate_final / learning_rate
+            base_lr = (0.5 + lr_final_factor / 2) + (0.5 - lr_final_factor / 2) * math.cos(math.pi * progress)
+        
+        # 返回一个函数，这个函数会根据参数组的不同返回不同的学习率
+        def get_group_lr(param_group):
+            lr_scale = param_group.get('my_lr_scale', 1.0)
+            group_lr = base_lr * lr_scale
+            
+            # 修改 weight_decay
+            if param_group.get('weight_decay', 0) > 0:
+                param_group['weight_decay'] = args.weight_decay  # 使用当前的 weight_decay 值
+            
+            # 记录每个参数组的学习率和权重衰减
+            if torch.distributed.get_rank() == 0:  # 只在主进程记录
+                # 计算参数组的统计信息
+                params = param_group['params']
+                total_params = sum(p.numel() for p in params)
+                
+                # 记录到 wandb
+                wandb.log({
+                    f"lr_group_{param_group.get('name', 'default')}": group_lr,
+                    f"wd_group_{param_group.get('name', 'default')}": param_group.get('weight_decay', 0),
+                    f"params_count_{param_group.get('name', 'default')}": total_params,
+                    "base_lr": base_lr,
+                    "step": current_step
+                })
+            
+            return group_lr
+        
+        return get_group_lr
     
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
@@ -472,11 +516,12 @@ def main():
     
     # 创建自定义的学习率调度器
     lr_scheduler = get_lr_scheduler(
-        optimizer, 
-        total_steps,
-        args.warmup_steps,
-        args.learning_rate,
-        args.learning_rate_final
+        optimizer=optimizer,
+        total_steps=total_steps,
+        warmup_steps=args.warmup_steps,
+        learning_rate=args.learning_rate,
+        learning_rate_final=args.learning_rate_final,
+        args=args
     )
     model_engine, optimizer, _, scheduler = deepspeed.initialize(
             model=model,
