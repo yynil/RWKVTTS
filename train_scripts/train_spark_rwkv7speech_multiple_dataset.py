@@ -328,7 +328,7 @@ def load_global_tokens(audio_tokenizer, directory, device):
         characters.append(parent_dir.split('/')[-1])
     return all_global_tokens, all_global_tokens_ids, characters
 
-def generate_demo(model_engine, text_tokenizer, demo_text, global_tokens_ids, device, eos_token_id, output_dir, epoch, step, character):
+def generate_demo(model_engine, text_tokenizer, demo_text, global_tokens_ids, device, eos_token_id, output_dir, epoch, step, character, audio_tokenizer):
     """生成demo音频"""
     # 将模型设置为评估模式
     model_engine.eval()
@@ -368,8 +368,21 @@ def generate_demo(model_engine, text_tokenizer, demo_text, global_tokens_ids, de
         with open(output_file, "w") as f:
             json.dump(json_output_data, f)
         
-        logger.info(f"Generated demo saved to {output_file}")
-    
+        print(f"Generated demo saved to {output_file}")
+        print(f"Reconstructing demo...")
+        import soundfile as sf
+        try:
+            with torch.no_grad():
+                wav_file = os.path.join(output_dir, f"demo_epoch_{epoch}_step_{step}_{character}.wav")
+                global_tokens = torch.tensor(global_tokens_ids).unsqueeze(0).to(device)
+                semantic_tokens = torch.tensor(pred_semantic_ids).unsqueeze(0).to(device)
+                wav_reconstructed = audio_tokenizer.detokenize(global_tokens, semantic_tokens)
+                sf.write(wav_file, wav_reconstructed, 16000)
+                print(f"Reconstructed demo saved to {wav_file}")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            logger.error(f"Error generating demo: {e}")
     # 恢复训练模式
     model_engine.train()
 
@@ -630,7 +643,8 @@ def main():
                         args.demo_dir,
                         epoch,
                         batch_idx,
-                        character
+                        character,
+                        audio_tokenizer
                     )
             
             # 首先检测 NaN
