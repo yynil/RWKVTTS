@@ -396,7 +396,12 @@ def main():
     world_size = int(os.getenv('WORLD_SIZE', '1'))
     is_main_process = local_rank == 0
     device = torch.device(f'cuda:{local_rank}')
-    
+    if is_main_process:
+        wandb.init(
+            project=args.wandb_project,
+            name=args.wandb_run_name,
+            config=vars(args)
+        )
     # Setup logging
     setup_logging(local_rank)
     logger = logging.getLogger(__name__)
@@ -557,12 +562,7 @@ def main():
         persistent_workers=True  # 保持工作进程存活
     )
         
-    if is_main_process:
-        wandb.init(
-            project=args.wandb_project,
-            name=args.wandb_run_name,
-            config=vars(args)
-        )
+    
     
     #delete the output_dir if it exists
     if os.path.exists(args.output_dir) and model_engine.local_rank == 0:
