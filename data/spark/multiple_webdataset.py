@@ -39,61 +39,81 @@ class MultipleWebDataset(torch.utils.data.Dataset):
         self.target_channels = target_channels
         self.verify_tar = verify_tar
         
-        # 获取所有子数据集目录
-        self.sub_datasets = [d for d in self.data_dir.iterdir() if d.is_dir()]
-        logger.info(f"找到 {len(self.sub_datasets)} 个子数据集目录")
-        
         # 为每个子数据集创建 Dataset
         self.datasets = []
-        for sub_dir in self.sub_datasets:
-            try:
-                print(f'验证数据集: {sub_dir}')
-                # 获取该目录下的所有 tar 文件
-                tar_files = []
-                for f in sub_dir.glob("*.tar*"):
-                    # 验证 tar 文件是否完整
-                    if self._is_valid_tar(f):
-                        tar_files.append(str(f))
-                    else:
-                        logger.warning(f"跳过损坏的 tar 文件: {f}")
-                
-                if not tar_files:
-                    logger.warning(f"在 {sub_dir} 中没有找到有效的 tar 文件")
+        # 获取所有子数据集目录
+        if self.data_dir.is_file():
+            print(f'load single tar file: {self.data_dir}')
+            dataset = load_dataset("webdataset", data_files=str(self.data_dir),split="train")
+            audio = Audio(sampling_rate=target_sr, mono=(target_channels==1))
+            features = dataset.features
+            audio_key = None
+            for key in features.keys():
+                if isinstance(features[key], Audio):
+                    audio_key = key
+                    break
+            if audio_key is None:
+                raise ValueError(f"在数据集中未找到音频数据，可用的键: {list(features.keys())}")
+            
+            dataset = dataset.cast_column(audio_key, audio)
+            #rename audio_key to audio 
+            if audio_key != "audio":
+                dataset = dataset.rename_column(audio_key, "audio")
+            logger.info(f"成功加载数据集: {self.data_dir}")
+            self.datasets.append(dataset)
+        else:
+            self.sub_datasets = [d for d in self.data_dir.iterdir() if d.is_dir()]
+            logger.info(f"找到 {len(self.sub_datasets)} 个子数据集目录")
+            
+            for sub_dir in self.sub_datasets:
+                try:
+                    print(f'验证数据集: {sub_dir}')
+                    # 获取该目录下的所有 tar 文件
+                    tar_files = []
+                    for f in sub_dir.glob("*.tar*"):
+                        # 验证 tar 文件是否完整
+                        if self._is_valid_tar(f):
+                            tar_files.append(str(f))
+                        else:
+                            logger.warning(f"跳过损坏的 tar 文件: {f}")
+                    
+                    if not tar_files:
+                        logger.warning(f"在 {sub_dir} 中没有找到有效的 tar 文件")
+                        continue
+                        
+                    logger.info(f"在 {sub_dir} 中找到 {len(tar_files)} 个有效的 tar 文件")
+                    
+                    # 使用 datasets 加载 WebDataset
+                    dataset = load_dataset(
+                        "webdataset",
+                        data_files=tar_files,
+                        split="train"
+                    )
+                    
+                    audio = Audio(sampling_rate=target_sr, mono=(target_channels==1))
+                    features = dataset.features
+                    audio_key = None
+                    for key in features.keys():
+                        if isinstance(features[key], Audio):
+                            audio_key = key
+                            break
+                    if audio_key is None:
+                        raise ValueError(f"在数据集中未找到音频数据，可用的键: {list(features.keys())}")
+                    
+                    dataset = dataset.cast_column(audio_key, audio)
+                    #rename audio_key to audio 
+                    if audio_key != "audio":
+                        dataset = dataset.rename_column(audio_key, "audio")
+                    logger.info(f"成功加载数据集: {sub_dir.name}")
+                    self.datasets.append(dataset)
+                    
+                except Exception as e:
+                    logger.error(f"加载数据集 {sub_dir} 时出错: {str(e)}")
                     continue
                     
-                logger.info(f"在 {sub_dir} 中找到 {len(tar_files)} 个有效的 tar 文件")
+            if not self.datasets:
+                raise ValueError("没有成功加载任何数据集")
                 
-                # 使用 datasets 加载 WebDataset
-                dataset = load_dataset(
-                    "webdataset",
-                    data_files=tar_files,
-                    split="train"
-                )
-                
-                audio = Audio(sampling_rate=target_sr, mono=(target_channels==1))
-                features = dataset.features
-                audio_key = None
-                for key in features.keys():
-                    if isinstance(features[key], Audio):
-                        audio_key = key
-                        break
-                if audio_key is None:
-                    raise ValueError(f"在数据集中未找到音频数据，可用的键: {list(features.keys())}")
-                
-                dataset = dataset.cast_column(audio_key, audio)
-                #rename audio_key to audio 
-                if audio_key != "audio":
-                    dataset = dataset.rename_column(audio_key, "audio")
-                logger.info(f"成功加载数据集: {sub_dir.name}")
-                self.datasets.append(dataset)
-                
-            except Exception as e:
-                logger.error(f"加载数据集 {sub_dir} 时出错: {str(e)}")
-                continue
-                
-        if not self.datasets:
-            raise ValueError("没有成功加载任何数据集")
-            
         # 合并所有数据集
         self.dataset = concatenate_datasets(self.datasets)
         
@@ -132,7 +152,13 @@ class MultipleWebDataset(torch.utils.data.Dataset):
         Returns:
             处理后的样本
         """
-        return self.dataset[idx]
+        try:
+            return self.dataset[idx]
+        except Exception as e:
+            print(f"Error in __getitem__: {e}")
+            print(f"idx: {idx}")
+            print(f"self.dataset: {self.dataset}")
+            raise e
         
     def __len__(self) -> int:
         """
@@ -172,23 +198,31 @@ def collate_fn_with_bicodec(batch, tokenizer, bicodec_tokenizer, pad_to_max_leng
     texts = []
     for sample in batch:
         # 处理文本
-        json_data = sample['json']
-        input_ids = tokenizer.encode(json_data['text'])
-        input_ids_list.append(torch.tensor(input_ids,dtype=torch.long))
-        input_ids_len.append(len(input_ids))
-        texts.append(json_data['text'])
-        # 处理音频
-        audio_array = sample['audio']['array']
-        # 使用 BiCodecTokenizer 处理音频
-        with torch.no_grad():
-            # 直接传入 numpy 数组
-            global_tokens, semantic_tokens = bicodec_tokenizer.tokenize(audio_array)
-            global_tokens = global_tokens.squeeze(0).squeeze(0)
-            semantic_tokens = semantic_tokens.squeeze(0)
+        try:
+            json_data = sample['json']
+            to_be_added_texts = json_data['text']
+            input_ids = tokenizer.encode(json_data['text'])
+            to_be_added_input_ids = torch.tensor(input_ids,dtype=torch.long)
+            # 处理音频
+            audio_array = sample['audio']['array']
+            # 使用 BiCodecTokenizer 处理音频
+            with torch.no_grad():
+                # 直接传入 numpy 数组
+                global_tokens, semantic_tokens = bicodec_tokenizer.tokenize(audio_array)
+                global_tokens = global_tokens.squeeze(0).squeeze(0)
+                semantic_tokens = semantic_tokens.squeeze(0)
+            input_ids_list.append(to_be_added_input_ids)
+            input_ids_len.append(len(input_ids))
             global_tokens_list.append(global_tokens)
             semantic_tokens_list.append(semantic_tokens)
             global_tokens_len.append(global_tokens.shape[0])
             semantic_tokens_len.append(semantic_tokens.shape[0])
+            texts.append(to_be_added_texts)
+        except Exception as e:
+            print(f"Error in collate_fn_with_bicodec: {e}")
+            print(f"sample: {sample}")
+            print(f"skip this sample")
+            continue
     from torch.nn.utils.rnn import pad_sequence
     padded_input_ids = pad_sequence(input_ids_list, batch_first=True, padding_value=tokenizer.pad_token_id,padding_side='left')
     padded_global_tokens = pad_sequence(global_tokens_list, batch_first=True, padding_value=0,padding_side='left')
@@ -551,7 +585,7 @@ def main_test():
     """测试 MultipleWebDataset 和 collate_fn_with_bicodec"""
     # 创建数据集实例
     dataset = MultipleWebDataset(
-        data_dir="/external_data/yueyudata/voxbox_wids/",
+        data_dir="/data/training/",
         target_sr=16000,
         target_channels=1,
         shuffle=True
