@@ -116,7 +116,8 @@ class CosyVoice2(CosyVoice):
         if not os.path.exists(model_dir):
             model_dir = snapshot_download(model_dir)
         with open('{}/cosyvoice.yaml'.format(model_dir), 'r') as f:
-            configs = load_hyperpyyaml(f, overrides={'qwen_pretrain_path': os.path.join(model_dir, 'CosyVoice-BlankEN')})
+            configs = load_hyperpyyaml(f, overrides={'llm_pretrain_path': os.path.join(model_dir, 'ConvertedCosyLLM'),
+                                                     'qwen_pretrain_path': os.path.join(model_dir, 'CosyVoice-BlankEN')})
         # assert get_model_type(configs) == CosyVoice2Model, 'do not use {} for CosyVoice2 initialization!'.format(model_dir)
         self.frontend = CosyVoiceFrontEnd(configs['get_tokenizer'],
                                           configs['feat_extractor'],
@@ -129,10 +130,17 @@ class CosyVoice2(CosyVoice):
         if torch.cuda.is_available() is False and (load_jit is True or load_trt is True or fp16 is True):
             load_jit, load_trt, fp16 = False, False, False
             logging.warning('no cuda device, set load_jit/load_trt/fp16 to False')
-        self.model = CosyVoice2Model(configs['llm'], configs['flow'], configs['hift'], fp16,device)
-        self.model.load('{}/llm.pt'.format(model_dir),
+        self.model = CosyVoice2Model(configs['llm'] if 'llm' in configs else None, configs['flow'], configs['hift'], fp16,device)
+        self.model.load('{}/llm.pt'.format(model_dir) if 'llm' in configs else None,
                         '{}/flow.pt'.format(model_dir),
                         '{}/hift.pt'.format(model_dir))
+        if 'llm' not in configs:
+            from transformers import AutoModelForCausalLM
+            print(f'configs: {configs}')
+            self.model.llm = AutoModelForCausalLM.from_pretrained(configs['llm_pretrain_path'],trust_remote_code=True)
+            self.model.llm.to(device).half()
+            self.model.llm.eval()
+            self.model.llm.sampling = configs['sampling']
         if load_jit:
             self.model.load_jit('{}/flow.encoder.{}.zip'.format(model_dir, 'fp16' if self.fp16 is True else 'fp32'))
         if load_trt:

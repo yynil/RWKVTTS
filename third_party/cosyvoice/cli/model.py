@@ -71,49 +71,50 @@ class CosyVoiceModel:
         self.hift_cache_dict = {}
 
     def load(self, llm_model, flow_model, hift_model):
-        llm_state_dict = torch.load(llm_model, map_location=self.device)
-        #check if self.llm.llm.model.layers[0].attn.x_r exists
-        if hasattr(self.llm.llm.model.layers[0].attn, 'x_r'):
-            print(f'x_r exists in self.llm.llm.model.layers[0].attn now convert the checkpoint')
-            layer_indices = set()
-            for key in llm_state_dict.keys():
-                if key.startswith("llm.model.layers."):
-                    # Extract the layer index from the key
-                    try:
-                        layer_idx = int(key.split(".")[3])  # Extract the number after 'model.layers.'
-                        layer_indices.add(layer_idx)
-                    except ValueError:
-                        # Skip keys that don't match the expected format
-                        continue
+        if llm_model is not None and self.llm is not None:
+            llm_state_dict = torch.load(llm_model, map_location=self.device)
+            #check if self.llm.llm.model.layers[0].attn.x_r exists
+            if hasattr(self.llm.llm.model.layers[0].attn, 'x_r'):
+                print(f'x_r exists in self.llm.llm.model.layers[0].attn now convert the checkpoint')
+                layer_indices = set()
+                for key in llm_state_dict.keys():
+                    if key.startswith("llm.model.layers."):
+                        # Extract the layer index from the key
+                        try:
+                            layer_idx = int(key.split(".")[3])  # Extract the number after 'model.layers.'
+                            layer_indices.add(layer_idx)
+                        except ValueError:
+                            # Skip keys that don't match the expected format
+                            continue
 
-            # Sort the layer indices to process them in order
-            sorted_layer_indices = sorted(layer_indices)
+                # Sort the layer indices to process them in order
+                sorted_layer_indices = sorted(layer_indices)
 
-            # Migration logic for each layer
-            for layer_idx in sorted_layer_indices:
-                layer_prefix = f"llm.model.layers.{layer_idx}"
-                attn_prefix = f"{layer_prefix}.attn"
+                # Migration logic for each layer
+                for layer_idx in sorted_layer_indices:
+                    layer_prefix = f"llm.model.layers.{layer_idx}"
+                    attn_prefix = f"{layer_prefix}.attn"
 
-                # Check if the layer contains the old 'x_x' parameter
-                if f"{attn_prefix}.x_x" in llm_state_dict:
-                    logger.info(f"Migrating weights for layer {layer_idx} from RWKV7Attention version 1 to version 2...")
-                    # Extract the x_x parameter
-                    x_x = llm_state_dict[f"{attn_prefix}.x_x"]
-                    with torch.no_grad():
-                        # Create new parameters for version 2
-                        llm_state_dict[f"{attn_prefix}.x_r"] = x_x[0].unsqueeze(0).unsqueeze(0)
-                        llm_state_dict[f"{attn_prefix}.x_w"] = x_x[1].unsqueeze(0).unsqueeze(0)
-                        llm_state_dict[f"{attn_prefix}.x_k"] = x_x[2].unsqueeze(0).unsqueeze(0)
-                        llm_state_dict[f"{attn_prefix}.x_v"] = x_x[3].unsqueeze(0).unsqueeze(0)
-                        llm_state_dict[f"{attn_prefix}.x_a"] = x_x[4].unsqueeze(0).unsqueeze(0)
-                        llm_state_dict[f"{attn_prefix}.x_g"] = x_x[5].unsqueeze(0).unsqueeze(0)
-                    del llm_state_dict[f"{attn_prefix}.x_x"]
-            self.llm.load_state_dict(llm_state_dict, strict=True)
+                    # Check if the layer contains the old 'x_x' parameter
+                    if f"{attn_prefix}.x_x" in llm_state_dict:
+                        logger.info(f"Migrating weights for layer {layer_idx} from RWKV7Attention version 1 to version 2...")
+                        # Extract the x_x parameter
+                        x_x = llm_state_dict[f"{attn_prefix}.x_x"]
+                        with torch.no_grad():
+                            # Create new parameters for version 2
+                            llm_state_dict[f"{attn_prefix}.x_r"] = x_x[0].unsqueeze(0).unsqueeze(0)
+                            llm_state_dict[f"{attn_prefix}.x_w"] = x_x[1].unsqueeze(0).unsqueeze(0)
+                            llm_state_dict[f"{attn_prefix}.x_k"] = x_x[2].unsqueeze(0).unsqueeze(0)
+                            llm_state_dict[f"{attn_prefix}.x_v"] = x_x[3].unsqueeze(0).unsqueeze(0)
+                            llm_state_dict[f"{attn_prefix}.x_a"] = x_x[4].unsqueeze(0).unsqueeze(0)
+                            llm_state_dict[f"{attn_prefix}.x_g"] = x_x[5].unsqueeze(0).unsqueeze(0)
+                        del llm_state_dict[f"{attn_prefix}.x_x"]
+                self.llm.load_state_dict(llm_state_dict, strict=True)
 
-        else:
-            print(f'x_r does not exist in self.llm.llm.model.layers[0].attn')
-            self.llm.load_state_dict(llm_state_dict, strict=True)
-        self.llm.to(self.device).eval()
+            else:
+                print(f'x_r does not exist in self.llm.llm.model.layers[0].attn')
+                self.llm.load_state_dict(llm_state_dict, strict=True)
+            self.llm.to(self.device).eval()
         self.flow.load_state_dict(torch.load(flow_model, map_location=self.device), strict=True)
         self.flow.to(self.device).eval()
         # in case hift_model is a hifigan model
@@ -339,10 +340,12 @@ class CosyVoice2Model(CosyVoiceModel):
         self.flow = flow
         self.hift = hift
         self.fp16 = fp16
-        self.llm.fp16 = fp16
+        if self.llm is not None:
+            self.llm.fp16 = fp16
         self.flow.fp16 = fp16
         if self.fp16 is True:
-            self.llm.half()
+            if self.llm is not None:
+                self.llm.half()
             self.flow.half()
         self.token_hop_len = 2 * self.flow.input_frame_rate
         # here we fix flow encoder/decoder decoding_chunk_size, in the future we will send it as arguments, or use cache
