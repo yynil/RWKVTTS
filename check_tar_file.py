@@ -52,9 +52,9 @@ def main():
 
 if __name__ == "__main__":
     # main() 
-    multiple_webdataset_dir = "/home/yueyulin/tmp/"
+    multiple_webdataset_dir = "/data/training/"
     import glob
-    tar_files = glob.glob(os.path.join(multiple_webdataset_dir, "*.tar"))
+    tar_files = glob.glob(os.path.join(multiple_webdataset_dir, "**/*.tar"))
     from datasets import load_dataset
     model_name = "/home/yueyulin/models/rwkv7-0.1B-g1-respark-speech/"
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
@@ -71,6 +71,8 @@ if __name__ == "__main__":
             verify_tar=False
         )
         
-        dl = DataLoader(ds, batch_size=128, collate_fn=data_collator)
-        for batch in dl:
+        progress_bar = tqdm(len(ds), desc=f"Processing {tar_file}")
+        for batch in progress_bar:
             audios = batch["audios"]
+            print(audios)
+            break
