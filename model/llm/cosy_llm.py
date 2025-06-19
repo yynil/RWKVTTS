@@ -83,6 +83,7 @@ class RWKV7CosyLM(RWKV7ForCausalLM):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        max_tokens_k: Optional[int] = None,
         **kwargs
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         # 处理批处理数据
@@ -118,7 +119,15 @@ class RWKV7CosyLM(RWKV7ForCausalLM):
                 inputs_embeds = self.dropout(inputs_embeds)
 
             labels = lm_target[:, 1:].contiguous()
-
+            if max_tokens_k is not None:
+                max_tokens = max_tokens_k * 1024
+                current_batch_size,current_batch_seq_len,_ = inputs_embeds.shape
+                max_batch_size = max_tokens // current_batch_seq_len
+                if max_batch_size < current_batch_size:
+                    print(f'max_batch_size < current_batch_size, max_batch_size: {max_batch_size}, current_batch_size: {current_batch_size} shrink the batch size')
+                    inputs_embeds = inputs_embeds[:max_batch_size]
+                    labels = labels[:max_batch_size]
+                    attention_mask = attention_mask[:max_batch_size]
         # 模型前向传播
         outputs = self.model(
             input_ids=input_ids,

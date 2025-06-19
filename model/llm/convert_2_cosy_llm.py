@@ -1,4 +1,4 @@
-from transformers import AutoModelForCausalLM, AutoConfig
+from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
 import argparse
 import torch
 from model.llm.llm import RWKV7LM
@@ -131,7 +131,10 @@ if __name__ == "__main__":
     new_state_dict['text_embedding.weight'] = state_dict['llm.model.embeddings.weight']
     # 加载调整后的状态字典
     cosy_llm.load_state_dict(new_state_dict, strict=True)
-
+    from utils.utilities import get_tokenizer
+    tokenizer = get_tokenizer(args.model_path)
+    tokenizer.save_pretrained(args.output_path)
+    print(f"save tokenizer to {args.output_path}")
     # 保存转换后的模型
     import shutil
     import os
@@ -141,18 +144,11 @@ if __name__ == "__main__":
     # copy hf_rwkv_tokenizer.py from model_dir to output_dir
     shutil.copy(os.path.join(args.model_path, "hf_rwkv_tokenizer.py"), args.output_path)
     print(f"copy hf_rwkv_tokenizer.py to {args.output_path}")
-    #copy tokenizer_config.json special_tokens_map.json added_tokens.json to output_dir
-    shutil.copy(os.path.join(args.model_path, "tokenizer_config.json"), args.output_path)
-    print(f"copy tokenizer_config.json to {args.output_path}")
-    shutil.copy(os.path.join(args.model_path, "special_tokens_map.json"), args.output_path)
-    print(f"copy special_tokens_map.json to {args.output_path}")
-    shutil.copy(os.path.join(args.model_path, "added_tokens.json"), args.output_path)
-    print(f"copy added_tokens.json to {args.output_path}")
     # copy *txt from model_dir to output_dir
     for file in os.listdir(args.model_path):
         if file.endswith('.txt'):
-            shutil.copy(os.path.join(args.model_dir, file), os.path.join(args.output_dir, file))
-            print(f"Copied {file} to {args.output_dir}")
+            shutil.copy(os.path.join(args.model_path, file), os.path.join(args.output_path, file))
+            print(f"Copied {file} to {args.output_path}")
     # 重新加载保存的模型进行验证
     print("\n开始验证保存的模型...")
     loaded_cosy_llm = AutoModelForCausalLM.from_pretrained(args.output_path,trust_remote_code=True)
