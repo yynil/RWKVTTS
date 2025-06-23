@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 class MultipleWebDataset(torch.utils.data.Dataset):
     def __init__(
         self,
-        data_dir: str,
+        data_dir: str = None,
+        data_files: List[str] = None,
         target_sr: int = 16000,
         target_channels: int = 1,
         shuffle: bool = True,
@@ -34,82 +35,103 @@ class MultipleWebDataset(torch.utils.data.Dataset):
             shuffle: 是否打乱数据
             verify_tar: 是否验证 tar 文件完整性
         """
-        self.data_dir = Path(data_dir)
+        
         self.target_sr = target_sr
         self.target_channels = target_channels
         self.verify_tar = verify_tar
         
         # 为每个子数据集创建 Dataset
         self.datasets = []
-        # 获取所有子数据集目录
-        if self.data_dir.is_file():
-            print(f'load single tar file: {self.data_dir}')
-            dataset = load_dataset("webdataset", data_files=str(self.data_dir),split="train")
-            audio = Audio(sampling_rate=target_sr, mono=(target_channels==1))
-            features = dataset.features
-            audio_key = None
-            for key in features.keys():
-                if isinstance(features[key], Audio):
-                    audio_key = key
-                    break
-            if audio_key is None:
-                raise ValueError(f"在数据集中未找到音频数据，可用的键: {list(features.keys())}")
-            
-            dataset = dataset.cast_column(audio_key, audio)
-            #rename audio_key to audio 
-            if audio_key != "audio":
-                dataset = dataset.rename_column(audio_key, "audio")
-            logger.info(f"成功加载数据集: {self.data_dir}")
-            self.datasets.append(dataset)
-        else:
-            self.sub_datasets = [d for d in self.data_dir.iterdir() if d.is_dir()]
-            logger.info(f"找到 {len(self.sub_datasets)} 个子数据集目录")
-            
-            for sub_dir in self.sub_datasets:
-                try:
-                    print(f'验证数据集: {sub_dir}')
-                    # 获取该目录下的所有 tar 文件
-                    tar_files = []
-                    for f in sub_dir.glob("*.tar*"):
-                        # 验证 tar 文件是否完整
-                        if self._is_valid_tar(f):
-                            tar_files.append(str(f))
-                        else:
-                            logger.warning(f"跳过损坏的 tar 文件: {f}")
-                    
-                    if not tar_files:
-                        logger.warning(f"在 {sub_dir} 中没有找到有效的 tar 文件")
-                        continue
+        if data_files is not None and len(data_files) > 0:
+            for data_file in data_files:
+                dataset = load_dataset("webdataset", data_files=data_file,split="train")
+                audio = Audio(sampling_rate=target_sr, mono=(target_channels==1))
+                features = dataset.features
+                audio_key = None
+                for key in features.keys():
+                    if isinstance(features[key], Audio):
+                        audio_key = key
+                        break
+                if audio_key is None:
+                    raise ValueError(f"在数据集中未找到音频数据，可用的键: {list(features.keys())}")
+                
+                dataset = dataset.cast_column(audio_key, audio)
+                #rename audio_key to audio 
+                if audio_key != "audio":
+                    dataset = dataset.rename_column(audio_key, "audio")
+                logger.info(f"成功加载数据集: {data_file}")
+                self.datasets.append(dataset)
+        else:   
+            # 获取所有子数据集目录
+            self.data_dir = Path(data_dir)
+            if self.data_dir.is_file():
+                print(f'load single tar file: {self.data_dir}')
+                dataset = load_dataset("webdataset", data_files=str(self.data_dir),split="train")
+                audio = Audio(sampling_rate=target_sr, mono=(target_channels==1))
+                features = dataset.features
+                audio_key = None
+                for key in features.keys():
+                    if isinstance(features[key], Audio):
+                        audio_key = key
+                        break
+                if audio_key is None:
+                    raise ValueError(f"在数据集中未找到音频数据，可用的键: {list(features.keys())}")
+                
+                dataset = dataset.cast_column(audio_key, audio)
+                #rename audio_key to audio 
+                if audio_key != "audio":
+                    dataset = dataset.rename_column(audio_key, "audio")
+                logger.info(f"成功加载数据集: {self.data_dir}")
+                self.datasets.append(dataset)
+            else:
+                self.sub_datasets = [d for d in self.data_dir.iterdir() if d.is_dir()]
+                logger.info(f"找到 {len(self.sub_datasets)} 个子数据集目录")
+                
+                for sub_dir in self.sub_datasets:
+                    try:
+                        print(f'验证数据集: {sub_dir}')
+                        # 获取该目录下的所有 tar 文件
+                        tar_files = []
+                        for f in sub_dir.glob("*.tar*"):
+                            # 验证 tar 文件是否完整
+                            if self._is_valid_tar(f):
+                                tar_files.append(str(f))
+                            else:
+                                logger.warning(f"跳过损坏的 tar 文件: {f}")
                         
-                    logger.info(f"在 {sub_dir} 中找到 {len(tar_files)} 个有效的 tar 文件")
-                    
-                    # 使用 datasets 加载 WebDataset
-                    dataset = load_dataset(
-                        "webdataset",
-                        data_files=tar_files,
-                        split="train"
-                    )
-                    
-                    audio = Audio(sampling_rate=target_sr, mono=(target_channels==1))
-                    features = dataset.features
-                    audio_key = None
-                    for key in features.keys():
-                        if isinstance(features[key], Audio):
-                            audio_key = key
-                            break
-                    if audio_key is None:
-                        raise ValueError(f"在数据集中未找到音频数据，可用的键: {list(features.keys())}")
-                    
-                    dataset = dataset.cast_column(audio_key, audio)
-                    #rename audio_key to audio 
-                    if audio_key != "audio":
-                        dataset = dataset.rename_column(audio_key, "audio")
-                    logger.info(f"成功加载数据集: {sub_dir.name}")
-                    self.datasets.append(dataset)
-                    
-                except Exception as e:
-                    logger.error(f"加载数据集 {sub_dir} 时出错: {str(e)}")
-                    continue
+                        if not tar_files:
+                            logger.warning(f"在 {sub_dir} 中没有找到有效的 tar 文件")
+                            continue
+                            
+                        logger.info(f"在 {sub_dir} 中找到 {len(tar_files)} 个有效的 tar 文件")
+                        
+                        # 使用 datasets 加载 WebDataset
+                        dataset = load_dataset(
+                            "webdataset",
+                            data_files=tar_files,
+                            split="train"
+                        )
+                        
+                        audio = Audio(sampling_rate=target_sr, mono=(target_channels==1))
+                        features = dataset.features
+                        audio_key = None
+                        for key in features.keys():
+                            if isinstance(features[key], Audio):
+                                audio_key = key
+                                break
+                        if audio_key is None:
+                            raise ValueError(f"在数据集中未找到音频数据，可用的键: {list(features.keys())}")
+                        
+                        dataset = dataset.cast_column(audio_key, audio)
+                        #rename audio_key to audio 
+                        if audio_key != "audio":
+                            dataset = dataset.rename_column(audio_key, "audio")
+                        logger.info(f"成功加载数据集: {sub_dir.name}")
+                        self.datasets.append(dataset)
+                        
+                    except Exception as e:
+                        logger.error(f"加载数据集 {sub_dir} 时出错: {str(e)}")
+                        continue
                     
             if not self.datasets:
                 raise ValueError("没有成功加载任何数据集")

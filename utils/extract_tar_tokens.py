@@ -15,6 +15,8 @@ import time
 import psutil
 import gc  # 添加 gc 模块导入
 from datetime import datetime
+from data.spark.multiple_webdataset import MultipleWebDataset
+from tqdm import tqdm
 
 def get_available_gpu(process_id: int):
     """根据进程ID分配GPU，每个GPU最多分配两个进程"""
@@ -86,7 +88,6 @@ def worker_process(process_id: int, input_queue: mp.Queue, init_done_queue: mp.Q
                     result = {
                         'language': json_data['language'],
                         'text': json_data['text'],
-                        'speaker': json_data['speaker'],
                         'global_tokens': global_tokens,
                         'semantic_tokens': semantic_tokens
                     }
@@ -162,8 +163,9 @@ def main():
     
     # 创建并启动工作进程
     processes = []
+    dir_name = os.path.basename(os.path.normpath(args.input_dir))
     for i in range(args.num_proc):
-        output_file = os.path.join(args.output_dir, f'output_{i}.jsonl')
+        output_file = os.path.join(args.output_dir, f'{dir_name}_{i}.jsonl')
         p = mp.Process(
             target=worker_process,
             args=(i, queues[i], init_done_queues[i], output_file, args.model_dir)
@@ -187,11 +189,11 @@ def main():
     print(f"Processing {len(all_tars)} files from index {args.from_index} to {args.to_index}")
     try:
         # 加载数据集
-        dataset = load_dataset('webdataset', data_files=all_tars, split='train')
+        dataset = MultipleWebDataset(data_files=all_tars)
         
         current_queue_idx = 0
-        for i, item in enumerate(dataset):
-            data = (item['json'], item['mp3']['array'], item['mp3']['sampling_rate'])
+        for i, item in enumerate(tqdm(dataset, desc=f"Processing Tars from {dir_name}")):
+            data = (item['json'], item['audio']['array'], item['audio']['sampling_rate'])
             
             # 轮询查找空闲队列
             max_attempts = args.num_proc
@@ -233,5 +235,6 @@ def main():
     print("All processes completed.")
 
 if __name__ == '__main__':
+    mp.set_start_method('spawn')
     main()
     input('Press Enter to continue...')
