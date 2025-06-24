@@ -74,7 +74,7 @@ class CosyVoiceModel:
         if llm_model is not None and self.llm is not None:
             llm_state_dict = torch.load(llm_model, map_location=self.device)
             #check if self.llm.llm.model.layers[0].attn.x_r exists
-            if hasattr(self.llm.llm.model.layers[0].attn, 'x_r'):
+            if hasattr(self.llm.llm.model,'layers') and hasattr(self.llm.llm.model.layers[0].attn, 'x_r'):
                 print(f'x_r exists in self.llm.llm.model.layers[0].attn now convert the checkpoint')
                 layer_indices = set()
                 for key in llm_state_dict.keys():

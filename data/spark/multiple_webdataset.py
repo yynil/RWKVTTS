@@ -268,6 +268,7 @@ def collate_fn_with_bicodec(batch, tokenizer, bicodec_tokenizer, pad_to_max_leng
         "texts": texts
     }
 
+
 def collate_fn_with_tokenizer(batch, tokenizer, pad_to_max_length=True, max_length=2048):
     """
     使用 BiCodecTokenizer 处理音频数据的 collate 函数
