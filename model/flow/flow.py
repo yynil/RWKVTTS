@@ -7,8 +7,8 @@ from torch.nn import functional as F
 from omegaconf import DictConfig
 from cosyvoice.utils.mask import make_pad_mask
 # Import the new modules
-from sfm_head import SFMHead
-from flow_matching import CausalConditionalCFM
+from model.flow.sfm_head import SFMHead
+from model.flow.flow_matching import CausalConditionalCFM
 
 
 # New SFM-enabled class
@@ -29,6 +29,7 @@ class CausalMaskedDiffWithXvecSFM(nn.Module):
         self.vocab_size = vocab_size
         self.pre_lookahead_len = pre_lookahead_len
         self.sfm_strength = sfm_strength # For inference
+        self.use_checkpoint = False  # Add gradient checkpointing flag
 
         self.input_embedding = nn.Embedding(vocab_size, input_size)
         self.encoder = encoder
@@ -60,12 +61,22 @@ class CausalMaskedDiffWithXvecSFM(nn.Module):
         token = self.input_embedding(torch.clamp(token, min=0)) * mask
 
         # 1. Generate coarse representations (H_g and X_g)
-        h_g, h_lengths = self.encoder(token, token_len, streaming=streaming) # h_g is H_g
+        if self.use_checkpoint and self.training:
+            h_g, h_lengths = torch.utils.checkpoint.checkpoint(
+                self._encoder_forward, token, token_len, streaming, use_reentrant=False
+            )
+        else:
+            h_g, h_lengths = self.encoder(token, token_len, streaming=streaming) # h_g is H_g
         x_g = self.encoder_proj(h_g) # x_g is X_g, coarse mel
 
         # 2. SFM Head Prediction
         # The SFM head takes the final hidden states H_g as input
-        x_h_pred, t_h_pred, log_sigma_sq_h_pred = self.sfm_head(h_g)
+        if self.use_checkpoint and self.training:
+            x_h_pred, t_h_pred, log_sigma_sq_h_pred = torch.utils.checkpoint.checkpoint(
+                self._sfm_head_forward, h_g, use_reentrant=False
+            )
+        else:
+            x_h_pred, t_h_pred, log_sigma_sq_h_pred = self.sfm_head(h_g)
 
         # 3. Compute Losses
         # 3.1 Coarse Mel Loss (L_coarse, Eq. 11)
@@ -108,6 +119,14 @@ class CausalMaskedDiffWithXvecSFM(nn.Module):
         # Total loss (Eq. 21)
         total_loss = loss_coarse + loss_t + loss_sigma + loss_cfm_and_mu
         return {'loss': total_loss, 'loss_coarse': loss_coarse, 'loss_t': loss_t, 'loss_sigma': loss_sigma, 'loss_cfm_mu': loss_cfm_and_mu}
+
+    def _encoder_forward(self, token, token_len, streaming):
+        """Helper method for gradient checkpointing"""
+        return self.encoder(token, token_len, streaming=streaming)
+    
+    def _sfm_head_forward(self, h_g):
+        """Helper method for gradient checkpointing"""
+        return self.sfm_head(h_g)
 
     @torch.inference_mode()
     def inference(self,

@@ -1,0 +1,144 @@
+# =============================================================================
+# SFM Flow Training Configuration
+# =============================================================================
+# This configuration is specifically designed for training the Shallow Flow 
+# Matching (SFM) model without LLM initialization.
+# 
+# Key Components:
+# 1. CausalMaskedDiffWithXvecSFM - Main SFM model
+# 2. UpsampleConformerEncoder - Text encoder
+# 3. SFMHead - Shallow Flow Matching head
+# 4. CausalConditionalCFM - Flow matching decoder with SFM support
+# 5. CausalConditionalDecoder - UNet-style estimator
+# =============================================================================
+
+# =============================================================================
+# Global Parameters
+# =============================================================================
+spk_embed_dim: 192          # Speaker embedding dimension (CamPPlus output)
+sfm_strength: 2.5           # SFM inference strength parameter alpha (Eq. 22)
+sample_rate: 24000          # Audio sample rate
+
+# =============================================================================
+# Feature Extractor Configuration
+# =============================================================================
+feat_extractor: !name:matcha.utils.audio.mel_spectrogram
+    n_fft: 1920             # FFT window size
+    num_mels: 80            # Number of mel frequency bins
+    sampling_rate: !ref <sample_rate>
+    hop_size: 480           # Frame hop size (20ms at 24kHz)
+    win_size: 1920          # Window size
+    fmin: 0                 # Minimum frequency
+    fmax: 8000              # Maximum frequency
+    center: False           # Don't center the window
+
+# =============================================================================
+# Main SFM Flow Model Configuration
+# =============================================================================
+flow: !new:model.flow.flow.CausalMaskedDiffWithXvecSFM
+    # =====================================================================
+    # Model Dimensions
+    # =====================================================================
+    input_size: 512         # Token embedding dimension
+    output_size: 80         # Mel-spectrogram channels
+    spk_embed_dim: !ref <spk_embed_dim>
+    vocab_size: 6561        # Speech tokenizer vocabulary size
+    pre_lookahead_len: 3    # Lookahead length for streaming
+    sfm_strength: !ref <sfm_strength>
+    
+    # =====================================================================
+    # Encoder Configuration (UpsampleConformerEncoder)
+    # =====================================================================
+    # This encoder processes speech tokens and generates hidden states H_g
+    encoder: !new:cosyvoice.transformer.upsample_encoder.UpsampleConformerEncoder
+        output_size: 512                    # Hidden state dimension
+        attention_heads: 8                  # Number of attention heads
+        linear_units: 2048                  # Feed-forward dimension
+        num_blocks: 6                       # Number of transformer blocks
+        dropout_rate: 0.1                   # Dropout rate
+        positional_dropout_rate: 0.1        # Positional encoding dropout
+        attention_dropout_rate: 0.1         # Attention dropout
+        normalize_before: True              # Pre-normalization
+        input_layer: 'linear'               # Input projection type
+        pos_enc_layer_type: 'rel_pos_espnet' # Relative positional encoding
+        selfattention_layer_type: 'rel_selfattn' # Relative self-attention
+        input_size: 512                     # Input dimension
+        use_cnn_module: False               # Disable CNN module
+        macaron_style: False                # Disable macaron style
+    
+    # =====================================================================
+    # SFM Head Configuration
+    # =====================================================================
+    # This head predicts X_h, t_h, and sigma_h for SFM (Figure 2 in Appendix B)
+    sfm_head: !new:model.flow.sfm_head.SFMHead
+        d_hidden: 512       # Must match encoder output_size
+        mel_channels: 80    # Must match flow output_size
+        dropout_rate: 0.5   # Dropout rate for SFM head
+    
+    # =====================================================================
+    # Decoder Configuration (CausalConditionalCFM with SFM support)
+    # =====================================================================
+    # This decoder implements the flow matching with SFM support
+    decoder: !new:model.flow.flow_matching.CausalConditionalCFM
+        in_channels: 352    # 80 (mel) + 80 (coarse mel) + 192 (spk_emb) = 352
+        n_spks: 1           # Number of speakers (single speaker model)
+        spk_emb_dim: 192    # Must match global spk_embed_dim
+        
+        # Flow matching parameters
+        cfm_params: !new:omegaconf.DictConfig
+            content:
+                sigma_min: 1e-06            # Minimum noise level
+                solver: 'euler'             # ODE solver type
+                t_scheduler: 'cosine'       # Time scheduling (cosine annealing)
+                training_cfg_rate: 0.2      # Training CFG rate
+                inference_cfg_rate: 0.7     # Inference CFG rate
+                reg_loss_type: 'l1'         # Regularization loss type
+        
+        # UNet-style estimator for flow matching
+        estimator: !new:model.flow.decoder.CausalConditionalDecoder
+            in_channels: 352                # Must match decoder in_channels
+            out_channels: 80                # Output mel channels
+            channels: [256]                 # UNet channel dimensions
+            dropout: 0.0                    # Dropout rate
+            attention_head_dim: 64          # Attention head dimension
+            n_blocks: 4                     # Number of transformer blocks per level
+            num_mid_blocks: 12              # Number of middle blocks
+            num_heads: 8                    # Number of attention heads
+            act_fn: 'gelu'                  # Activation function
+            static_chunk_size: 50           # Chunk size for streaming
+            num_decoding_left_chunks: 2     # Number of left chunks for streaming
+
+# =============================================================================
+# Training Notes
+# =============================================================================
+# 
+# 1. Loss Components (Eq. 21):
+#    - L_coarse: Coarse mel-spectrogram loss (Eq. 11)
+#    - L_t: Time prediction loss (Eq. 16)
+#    - L_sigma: Variance prediction loss (Eq. 16)
+#    - L_cfm + L_mu: Flow matching loss (Eq. 20 + Eq. 13)
+#
+# 2. SFM Training Process:
+#    - Encoder generates H_g from speech tokens
+#    - SFM head predicts X_h, t_h, sigma_h from H_g
+#    - Decoder computes piecewise flow matching loss
+#    - Total loss = L_coarse + L_t + L_sigma + L_cfm + L_mu
+#
+# 3. Key Hyperparameters:
+#    - sfm_strength (alpha): Controls SFM inference strength
+#    - training_cfg_rate: Classifier-free guidance during training
+#    - inference_cfg_rate: Classifier-free guidance during inference
+#    - sigma_min: Minimum noise level for numerical stability
+#
+# 4. Model Architecture:
+#    - Causal design for streaming inference
+#    - Relative positional encoding for better generalization
+#    - UNet-style decoder with skip connections
+#    - SFM head based on duration predictor architecture
+#
+# 5. Training Recommendations:
+#    - Use gradient checkpointing for memory efficiency
+#    - Apply different learning rates for SFM head (2x higher)
+#    - Monitor all loss components separately
+#    - Use cosine learning rate scheduling
+#    - Apply weight decay to 2D weight matrices only 
