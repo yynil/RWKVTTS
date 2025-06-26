@@ -12,6 +12,7 @@ from transformers import AutoTokenizer,AutoModelForCausalLM
 from torch.utils.data import DataLoader
 from sparktts.models.audio_tokenizer import BiCodecTokenizer
 from model.llm.spark_llm import RWKV7ForSpeech
+import random
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -174,14 +175,23 @@ class MultipleWebDataset(torch.utils.data.Dataset):
         Returns:
             处理后的样本
         """
-        try:
-            return self.dataset[idx]
-        except Exception as e:
-            print(f"Error in __getitem__: {e}")
-            print(f"idx: {idx}")
-            print(f"self.dataset: {self.dataset}")
-            raise e
-        
+        retry_times = 0
+        while retry_times < 3:
+            try:
+                return self.dataset[idx]
+            except Exception as e:
+                print(f"Error in __getitem__: {e}")
+                print(f"idx: {idx}")
+                print(f"self.dataset: {self.dataset}")
+                retry_times += 1
+                #select a random index other than idx
+                while True:
+                    new_idx = random.randint(0, len(self.dataset)-1)
+                    if new_idx != idx:
+                        break
+                print(f"retry_times: {retry_times}, idx: {idx} ,new_idx: {new_idx}")
+                idx = new_idx
+        raise Exception(f"Failed to get item after 3 retries, idx: {idx}")
     def __len__(self) -> int:
         """
         返回数据集大小
