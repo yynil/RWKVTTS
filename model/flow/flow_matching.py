@@ -48,10 +48,22 @@ class ConditionalCFM(BASECFM):
             sigma_h = sfm_inputs['sigma_h'] # [B, 1]
             alpha = sfm_inputs.get('alpha', 1.0) # SFM strength
 
+            # x_h is based on token length (from encoder hidden states), mu is based on mel length
+            # token_mel_ratio = 2, so x_h has token length while mu has mel length (2x token length)
+            token_mel_ratio = 2
+            expected_x_h_time = mu.size(2) // token_mel_ratio
+            
+            if x_h.size(2) != expected_x_h_time:
+                # Interpolate x_h to match the expected token-based time dimension
+                x_h = torch.nn.functional.interpolate(x_h, size=expected_x_h_time, mode='linear', align_corners=False)
+            
+            # Now expand x_h to match mu's time dimension for the computation
+            x_h_expanded = torch.nn.functional.interpolate(x_h, size=mu.size(2), mode='linear', align_corners=False)
+
             # 2. Construct the intermediate state with SFM strength (Eq. 22)
             delta = torch.maximum(alpha * ((1 - self.sigma_min) * t_h + sigma_h), torch.tensor(1.0, device=mu.device))
 
-            x_h_bar = (alpha / delta).unsqueeze(-1) * x_h
+            x_h_bar = (alpha / delta).unsqueeze(-1) * x_h_expanded
             t_h_bar = (alpha / delta) * t_h
             sigma_sq_h_bar = (alpha**2 / delta**2) * (sigma_h**2)
 
@@ -64,8 +76,18 @@ class ConditionalCFM(BASECFM):
             # 3. Use an ODE solver to solve the integral from t_h_bar to 1
             start_time = t_h_bar[0].item()
             t_span = torch.linspace(start_time, 1, n_timesteps + 1, device=mu.device)
-            # The Euler solver starts from x_t_h at time t_h_bar
-            return self.solve_euler(x_t_h, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond), None
+            
+            # Fix: Use direct ODE solving without CFG processing to match compute_loss
+            x = x_t_h
+            for step in range(len(t_span) - 1):
+                dt = t_span[step + 1] - t_span[step]
+                t = t_span[step].unsqueeze(0)
+                
+                # Direct estimator call without CFG processing
+                dphi_dt = self.estimator(x, mask, mu, t.squeeze(), spks, cond, streaming=False)
+                x = x + dt * dphi_dt
+            
+            return x.float(), None
 
         # --- Standard Inference (from noise) ---
         z = torch.randn_like(mu).to(mu.device).to(mu.dtype) * temperature
@@ -172,7 +194,11 @@ class ConditionalCFM(BASECFM):
             # 3. Apply single-segment piecewise flow (Eq. 18 & 19)
             t_u = torch.rand([b, 1, 1], device=mu.device, dtype=mu.dtype) * (1 - t_h_bar) + t_h_bar
             x_t = (1 - t_u) * x_t_h.detach() + t_u * (x1 + self.sigma_min * x0)
-            u_t = (x1 + self.sigma_min * x0) - x_t_h.detach()
+            
+            # According to paper Eq. (19), the vector field U_t needs to be scaled by 1/(1-t_h)
+            # This is the critical fix.
+            t_h_for_scaling = t_h_true.view(b, 1, 1).detach()
+            u_t = (1.0 / (1.0 - t_h_for_scaling + 1e-8)) * ((x1 + self.sigma_min * x0) - x_t_h.detach())
 
             # The actual time t passed to the estimator is rescaled to [t_h_bar, 1] (Eq. 17)
             t_s = (1 - t_h_bar) * t_u + t_h_bar

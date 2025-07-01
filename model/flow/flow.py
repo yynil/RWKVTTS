@@ -57,7 +57,7 @@ class CausalMaskedDiffWithXvecSFM(nn.Module):
 
         embedding = F.normalize(embedding, dim=1)
 
-        mask = (~make_pad_mask(token_len)).float().unsqueeze(-1).to(device)
+        mask = (~make_pad_mask(token_len,max_len=token.shape[1])).float().unsqueeze(-1).to(device)
         token = self.input_embedding(torch.clamp(token, min=0)) * mask
 
         # 1. Generate coarse representations (H_g and X_g)
@@ -151,6 +151,11 @@ class CausalMaskedDiffWithXvecSFM(nn.Module):
         
         x_g = self.encoder_proj(h_g)
         mel_len1 = prompt_feat.shape[1]
+        
+        # Calculate feat_len based on the concatenated token length
+        # Fix: feat_len should be token_len * ratio_feat_ratio (typically 2)
+        ratio_feat_ratio = 2  # This should match the training configuration
+        feat_len = token_len * ratio_feat_ratio
         
         # Get SFM head predictions
         x_h, t_h, log_sigma_sq_h = self.sfm_head(h_g)

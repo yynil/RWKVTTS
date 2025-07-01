@@ -59,11 +59,11 @@ class ScriptArguments:
         metadata={"help": "Training batch size per device"}
     )
     learning_rate: float = field(
-        default=1e-4,
+        default=6e-4,
         metadata={"help": "Learning rate"}
     )
     learning_rate_final: float = field(
-        default=1e-6,
+        default=3e-4,
         metadata={"help": "Final learning rate at the end of training"}
     )
     weight_decay: float = field(
@@ -125,6 +125,11 @@ class ScriptArguments:
     speech_tokenizer_file: str = field(
         default='/home/yueyulin/models/CosyVoice2-0.5B/speech_tokenizer_v2.onnx',
         metadata={"help": "Path to speech tokenizer model"}
+    )
+
+    max_tokens_per_batch_k: int = field(
+        default=128,
+        metadata={"help": "Maximum number of tokens per batch in k"}
     )
 
 def setup_logging(local_rank):
@@ -210,7 +215,7 @@ def update_learning_rate(optimizer, current_step, total_steps, warmup_steps, lea
     else:
         # 修复：使用current_step而不是total_steps来计算进度
         # 假设总步数为num_epochs * steps_per_epoch，这里使用一个合理的估计
-        estimated_total_steps = args.num_epochs * 1000  # 可以根据实际情况调整
+        estimated_total_steps = total_steps
         progress = float(current_step - warmup_steps) / float(max(1, estimated_total_steps - warmup_steps))
         progress = max(0, min(1, progress))
         lr_final_factor = learning_rate_final / learning_rate
@@ -534,11 +539,11 @@ def main():
         shutil.rmtree(args.output_dir)
     
     total_loss = 0.0
-    total_steps = 0
+    total_steps = len(dataset)*args.num_epochs//(args.per_device_train_batch_size*world_size)
     all_tokens = 0
     global_steps = 0
     device = model_engine.device
-    
+    all_steps = 0
     for epoch in range(args.num_epochs):
         model_engine.train()
         # 修复：所有进程都需要更新时间，而不仅仅是主进程
@@ -571,14 +576,28 @@ def main():
             )
             
             batch_data = create_batch_data(mel_list, embedding_list, speech_token_list, texts_list, device)
+            bs_size = batch_data['speech_token'].shape[0]
+            current_t_size = batch_data['speech_token'].shape[1]
+            if current_t_size * bs_size > args.max_tokens_per_batch_k*1024:
+                max_bs_size = max(args.max_tokens_per_batch_k*1024 // current_t_size, 1)
+                logger.info(f"Current token size {current_t_size} is greater than max tokens per batch {args.max_tokens_per_batch_k}, strip to {max_bs_size} samples")
+                
+                # Directly truncate batch_data tensors
+                batch_data['speech_token'] = batch_data['speech_token'][:max_bs_size]
+                batch_data['speech_token_len'] = batch_data['speech_token_len'][:max_bs_size]
+                batch_data['speech_feat'] = batch_data['speech_feat'][:max_bs_size]
+                batch_data['speech_feat_len'] = batch_data['speech_feat_len'][:max_bs_size]
+                batch_data['embedding'] = batch_data['embedding'][:max_bs_size]
+                batch_data['texts'] = batch_data['texts'][:max_bs_size]
+                bs_size = max_bs_size
+
+
+
             
             # Training step
             loss_dict = train_step(model_engine, batch_data, device)
             loss = loss_dict['loss']
             
-            if is_main_process and batch_idx == 0:
-                print(f'loss: {loss}')
-                print(f'loss components: {loss_dict}')
             
             global_steps += 1
             
@@ -612,17 +631,17 @@ def main():
             if is_main_process:
                 elapsed_time = time.time() - update_time
                 total_loss += loss.item()
-                total_steps += 1
+                all_steps += 1
                 
                 # Calculate averages
-                avg_loss = total_loss / total_steps
+                avg_loss = total_loss / all_steps
                 tokens = batch_data['speech_token'].shape[1]
                 all_tokens += tokens * world_size
                 kts = tokens / elapsed_time / 1e3
                 
                 # Log to wandb
                 current_lr = optimizer.param_groups[0]['lr']
-                log_metrics(optimizer, loss_dict, avg_loss, epoch, total_steps, kts, all_tokens, current_lr)
+                log_metrics(optimizer, loss_dict, avg_loss, epoch, all_steps, kts, all_tokens, current_lr)
                 
                 pbar.update(1)
                 pbar.set_postfix({
