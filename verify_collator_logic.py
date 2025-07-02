@@ -25,7 +25,7 @@ def process_batch(features, text_tokenizer, xy_tokenizer, num_channels, text_shi
     """
     processed_features = []
     for feature in features:
-        text = f"[SP0]{feature.get('json', {}).get('text', '')}[CTL0]"
+        text = f"[S0]{feature.get('json', {}).get('text', '')}[CTL0]"
         audio_np = feature.get('audio', {}).get('array')
         if not text or audio_np is None:
             logger.warning("Skipping sample due to missing text or audio.")

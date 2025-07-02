@@ -11,7 +11,7 @@ from rwkvfla.models.rwkv7.configuration_rwkv7 import RWKV7Config
 from transformers.generation import GenerationMixin, LogitsProcessorList, StoppingCriteriaList, GenerationConfig
 from transformers.generation.logits_process import RepetitionPenaltyLogitsProcessor, TemperatureLogitsWarper, TopKLogitsWarper, TopPLogitsWarper
 from transformers.generation.utils import GenerateDecoderOnlyOutput
-from transformers.streaming import BaseStreamer
+from transformers.generation.streamers import BaseStreamer
 
 
 class RWKV7XYConfig(RWKV7Config):

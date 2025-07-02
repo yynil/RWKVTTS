@@ -98,7 +98,7 @@ def process_batch(features, text_tokenizer, xy_tokenizer, num_channels, text_shi
 
     # Process each feature
     for feature in features:
-        text = f"[SP0]{feature.get('json', {}).get('text', '')}[CTL0]"
+        text = f"[S0]{feature.get('json', {}).get('text', '')}[CTL0]"
         audio_np = feature.get('audio', {}).get('array')
 
         if not text or audio_np is None:
@@ -360,6 +360,8 @@ def main():
         trust_remote_code=True, 
         torch_dtype=torch.bfloat16
     )
+    model.zero_embs()
+    logger.info("Padding embeddings have been zeroed out.")
     num_channels = model.config.num_channels
     logger.info(f"Model configured with {num_channels} channels.")
 
@@ -596,6 +598,25 @@ def main():
                             'avg_loss': total_loss / (step % args.logging_steps + 1) if args.logging_steps > 0 else total_loss,
                             'lr': optimizer.param_groups[0]['lr']
                         })
+
+                    # --- Padding Embedding Verification ---
+                    if is_main_process and global_step % 100 == 0:
+                        try:
+                            text_pad_idx = model_engine.module.config.vocab_size - 1
+                            speech_pad_idx = model_engine.module.config.speech_vocab_size - 1
+                            
+                            text_pad_emb = model_engine.module.embs[0].weight.data[text_pad_idx]
+                            speech_pad_embs = [model_engine.module.embs[i].weight.data[speech_pad_idx] for i in range(1, model_engine.module.config.num_channels)]
+                            
+                            is_text_pad_zero = torch.all(text_pad_emb == 0)
+                            are_speech_pads_zero = all(torch.all(emb == 0) for emb in speech_pad_embs)
+                            
+                            if is_text_pad_zero and are_speech_pads_zero:
+                                logger.info(f"Step {global_step}: Padding embedding check PASSED. All padding vectors are zero.")
+                            else:
+                                logger.warning(f"Step {global_step}: Padding embedding check FAILED. Padding vectors have been updated.")
+                        except Exception as e:
+                            logger.error(f"Could not perform padding embedding check at step {global_step}: {e}")
 
                     # Save checkpoint
                     if global_step % args.save_steps == 0:
