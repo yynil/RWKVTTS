@@ -47,7 +47,6 @@ class ScriptArguments:
     output_dir: str = field(
         metadata={"help": "Directory to save the trained model and checkpoints."}
     )
-    text_shift_size: int = field(default=65536, metadata={"help": "Text shift size."})
     max_tokens_per_round: Optional[int] = field(
         default=None, 
         metadata={"help": "Maximum number of tokens (B x T) per round in KB (1024s). If a batch exceeds this, it will be sliced. E.g., 16 means 16384 tokens."}
@@ -460,7 +459,8 @@ def main():
         os.makedirs(args.output_dir, exist_ok=True)
 
     logger.info("*** Starting Training ***")
-    
+    args.text_shift_size = text_tokenizer.encode("[SP0]")[0]
+    print(f"text_shift_size: {args.text_shift_size}")
     # Test a single batch to ensure everything works
     logger.info("Testing data pipeline with a single batch...")
     raw_test_batch = next(iter(dataloader))
