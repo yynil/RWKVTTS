@@ -149,7 +149,7 @@ def main():
     parser.add_argument('--model_dir', type=str, default='/home/yueyulin/models/Spark-TTS-0.5B/')
     parser.add_argument('--num_proc', type=int, default=4, help='Number of processes to use')
     parser.add_argument('--from_index', type=int, default=0, help='Start index of files to process (inclusive)')
-    parser.add_argument('--to_index', type=int, default=100, help='End index of files to process (exclusive)')
+    parser.add_argument('--to_index', type=int, default=None, help='End index of files to process (exclusive)')
     args = parser.parse_args()
 
     print(args)
@@ -183,6 +183,9 @@ def main():
     all_tars = glob.glob(os.path.join(args.input_dir, '*.tar'))
     #sort by name
     all_tars.sort()
+    if args.to_index is None:
+        args.to_index = len(all_tars)
+        print(f"Using all files from index {args.from_index} to {args.to_index}")
     # 使用from_index和to_index来切片文件列表
     all_tars = all_tars[args.from_index:args.to_index]
     all_tars = [os.path.join(args.input_dir, tar) for tar in all_tars]
@@ -237,4 +240,3 @@ def main():
 if __name__ == '__main__':
     mp.set_start_method('spawn')
     main()
-    input('Press Enter to continue...')
