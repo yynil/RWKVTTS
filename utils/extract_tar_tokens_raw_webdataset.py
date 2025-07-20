@@ -18,6 +18,10 @@ from datetime import datetime
 from utils.RawMutltipleWebDataset import RawMutltipleWebDataset
 from tqdm import tqdm
 import io
+from difflib import SequenceMatcher
+from tn.chinese.normalizer import Normalizer as ZhNormalizer
+
+
 
 def get_available_gpu(process_id: int):
     """根据进程ID分配GPU，每个GPU最多分配两个进程"""
@@ -28,7 +32,7 @@ def get_available_gpu(process_id: int):
             return 'cpu'
             
         # 计算应该使用哪个GPU
-        gpu_id = (process_id // 2) % device_count
+        gpu_id = (process_id ) % device_count
         return f'cuda:{gpu_id}'
     except:
         return 'cpu'
@@ -45,12 +49,34 @@ def worker_process(process_id: int, input_queue: mp.Queue, init_done_queue: mp.Q
     # 添加统计信息
     start_time = time.time()
     total_requests = 0
-    
+    normalizer = ZhNormalizer(remove_erhua=True, overwrite_cache=False,remove_puncts=True)
+    import whisper
+    from difflib import SequenceMatcher
+    def normalize_text(text):
+        """
+        标准化文本，去除标点符号，统一数字和百分比的表示
+        """
+        text = normalizer.normalize(text)
+        
+        return text.strip()
+    def calculate_similarity(text1, text2):
+        """
+        计算两个文本的相似度
+        """
+        # 标准化两个文本
+        norm_text1 = normalize_text(text1)
+        norm_text2 = normalize_text(text2)
+        
+        
+        # 使用SequenceMatcher计算相似度
+        similarity = SequenceMatcher(None, norm_text1, norm_text2).ratio()
+        return similarity,norm_text1,norm_text2
+    err_count = 0
     try:
         # 获取GPU资源
         gpu_id = get_available_gpu(process_id)
         print(f"Process {process_id} initializing with device: {gpu_id}")
-        
+        model = whisper.load_model("turbo",device=gpu_id,download_root='model_cache')
         # 初始化tokenizer
         audio_tokenizer = BiCodecTokenizer(model_dir, device=gpu_id)
         
@@ -71,10 +97,32 @@ def worker_process(process_id: int, input_queue: mp.Queue, init_done_queue: mp.Q
                         break
                     
                     # 解包数据
-                    json_data, audio_array, sampling_rate = data
-                    
+                    json_data, audio_data, sampling_rate = data
+                    result = model.transcribe(audio_data,language='zh',initial_prompt="以下是普通话的句子。")
+                    similarity,norm_text1,norm_text2 = calculate_similarity(result['text'],json_data['text'])
+                    if similarity < 0.93:
+                        # print(f"similarity is {similarity}, fail❌ ")
+                        # print(f"json_data: {json_data['text']}")
+                        # print(f"result: {result['text']}")
+                        # print(f"norm_text1: {norm_text1}")
+                        # print(f"norm_text2: {norm_text2}")
+                        # print("-"*50)
+                        # #log the error to err directory
+                        # os.makedirs('err_log',exist_ok=True)
+                        # error_id = f'{process_id}_{err_count}'
+                        # with open(f'err_log/{error_id}.txt','w') as err_file:
+                        #     err_file.write(f"json_data: {json_data['text']}\n")
+                        #     err_file.write(f"result: {result['text']}\n")
+                        #     err_file.write(f"norm_text1: {norm_text1}\n")
+                        #     err_file.write(f"norm_text2: {norm_text2}\n")
+                        #     err_file.write(f"similarity: {similarity}\n")
+                        #     err_file.write("-"*50)
+                        #     #wave audio to wav file
+                        #     sf.write(f'err_log/{error_id}.wav',audio_data,sampling_rate)
+                        #     err_file.write(f'err_log/{error_id}.wav')
+                        err_count += 1
+                        continue
                     # 确保音频数据是float32类型
-                    audio_data = np.array(audio_array, dtype=np.float32)
                     target_sample_rate = audio_tokenizer.config['sample_rate']
                     
                     if sampling_rate != target_sample_rate:
@@ -109,7 +157,6 @@ def worker_process(process_id: int, input_queue: mp.Queue, init_done_queue: mp.Q
                         print(f"  Average time per request: {avg_time:.2f}s")
                     
                     # 处理完数据后立即清理
-                    del audio_array
                     del audio_data
                     del global_tokens
                     del semantic_tokens
@@ -202,8 +249,10 @@ def main():
             if audio_tensor2.shape[0] > 1:
                 # 将多声道音频转换为单声道
                 audio_tensor2 = audio_tensor2.mean(dim=0)
-            audio_array = audio_tensor2.tolist()
-            data = (json_data, audio_array, sample_rate2)
+            if sample_rate2 != 16000:
+                audio_tensor2 = torchaudio.transforms.Resample(orig_freq=sample_rate2,new_freq=16000)(audio_tensor2)
+            audio_array = audio_tensor2.numpy()
+            data = (json_data, audio_array, 16000)
             
             # 轮询查找空闲队列
             max_attempts = args.num_proc

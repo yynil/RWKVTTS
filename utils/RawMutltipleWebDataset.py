@@ -2,7 +2,7 @@ from webdataset import WebDataset
 from torch.utils.data import Dataset
 
 class RawMutltipleWebDataset(Dataset):
-    def __init__(self, data_files, shard_size=1000):
+    def __init__(self, data_files):
         self.data_files = sorted(data_files)
         self.current_file_index = 0
         self.wds = WebDataset(self.data_files)
