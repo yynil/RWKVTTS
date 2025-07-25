@@ -60,62 +60,62 @@ def worker_process(process_id: int, input_queue: mp.Queue, init_done_queue: mp.Q
         print(f"Process {process_id} initialization completed")
         
         # 打开输出文件
-        with open(output_file, 'w', encoding='utf-8') as f:
-            while True:
-                try:
-                    # 从队列获取数据
-                    data = input_queue.get()
-                    
-                    # 检查是否是退出信号
-                    if data == EXIT_SIGNAL:
-                        print(f"Process {process_id} received exit signal, shutting down...")
-                        break
-                    
-                    # 解包数据
-                    json_data, audio_data, sampling_rate = data
-                    with torch.no_grad():
-                        vq = audio_tokenizer.encode(audio_data,sampling_rate)
-                    speech_tokens = vq.detach().cpu().tolist()
-                    result = {
-                        'language': json_data.get('language', 'zh'),
-                        'text': json_data['text'],
-                        'audio_tokens': speech_tokens
-                    }
-                    
-                    # 写入JSONL文件
-                    f.write(json.dumps(result, ensure_ascii=False) + '\n')
-                    f.flush()  # 确保数据及时写入磁盘
-                    
-                    # 更新统计信息
-                    total_requests += 1
-                    if total_requests % 1000 == 0:
-                        current_time = time.time()
-                        total_time = current_time - start_time
-                        avg_time = total_time / total_requests
-                        print(f"Process {process_id} stats at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}:")
-                        print(f"  Total requests: {total_requests}")
-                        print(f"  Total time: {total_time:.2f}s")
-                        print(f"  Average time per request: {avg_time:.2f}s")
-                    
-                    # 处理完数据后立即清理
-                    del audio_data
-                    del speech_tokens
-                    torch.cuda.empty_cache()  # 清理GPU缓存
-                    gc.collect()  # 手动触发垃圾回收
-                    
-                    # 监控内存使用
-                    if process.memory_info().rss > 1024 * 1024 * 1024*100:  # 超过100GB
-                        print(f"Process {process_id} memory usage high: {process.memory_info().rss / 1024 / 1024}MB")
-                        torch.cuda.empty_cache()
-                    
-                except queue.Empty:
-                    continue
-                except Exception as e:
-                    import traceback
-                    traceback.print_exc()
-                    print(f"Process {process_id} encountered error: {str(e)}")
-                    continue
-                    
+        f = open(output_file, 'w', encoding='utf-8')
+        while True:
+            try:
+                # 从队列获取数据
+                data = input_queue.get()
+                
+                # 检查是否是退出信号
+                if data == EXIT_SIGNAL:
+                    print(f"Process {process_id} received exit signal, shutting down...")
+                    break
+                
+                # 解包数据
+                json_data, audio_data, sampling_rate = data
+                with torch.no_grad():
+                    vq = audio_tokenizer.encode(audio_data,sampling_rate)
+                speech_tokens = vq.detach().cpu().tolist()
+                result = {
+                    'language': json_data.get('language', 'zh'),
+                    'text': json_data['text'],
+                    'audio_tokens': speech_tokens
+                }
+                
+                # 写入JSONL文件
+                f.write(json.dumps(result, ensure_ascii=False) + '\n')
+                f.flush()  # 确保数据及时写入磁盘
+                
+                # 更新统计信息
+                total_requests += 1
+                if total_requests % 1000 == 0:
+                    current_time = time.time()
+                    total_time = current_time - start_time
+                    avg_time = total_time / total_requests
+                    print(f"Process {process_id} stats at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}:")
+                    print(f"  Total requests: {total_requests}")
+                    print(f"  Total time: {total_time:.2f}s")
+                    print(f"  Average time per request: {avg_time:.2f}s")
+                
+                # 处理完数据后立即清理
+                del audio_data
+                del speech_tokens
+                torch.cuda.empty_cache()  # 清理GPU缓存
+                gc.collect()  # 手动触发垃圾回收
+                
+                # 监控内存使用
+                if process.memory_info().rss > 1024 * 1024 * 1024*100:  # 超过100GB
+                    print(f"Process {process_id} memory usage high: {process.memory_info().rss / 1024 / 1024}MB")
+                    torch.cuda.empty_cache()
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"Process {process_id} encountered error: {str(e)}")
+                continue
+        f.close()
     except Exception as e:
         print(f"Process {process_id} failed to initialize: {str(e)}")
         # 即使初始化失败也发送信号，避免主进程卡住
