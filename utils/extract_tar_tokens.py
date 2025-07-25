@@ -27,7 +27,7 @@ def get_available_gpu(process_id: int):
             return 'cpu'
             
         # 计算应该使用哪个GPU
-        gpu_id = (process_id // 2) % device_count
+        gpu_id = (process_id ) % device_count
         return f'cuda:{gpu_id}'
     except:
         return 'cpu'
@@ -51,19 +51,18 @@ def worker_process(process_id: int, input_queue: mp.Queue, init_done_queue: mp.Q
         print(f"Process {process_id} initializing with device: {gpu_id}")
         
         # 初始化tokenizer
-        audio_tokenizer = BiCodecTokenizer(model_dir, device=gpu_id)
+        audio_tokenizer = BiCodecTokenizer(model_dir, device=gpu_id,device_num=4)
         
         # 发送初始化完成信号
         init_done_queue.put(INIT_DONE_SIGNAL)
         print(f"Process {process_id} initialization completed")
-        
+        error_idx = 0
         # 打开输出文件
         with open(output_file, 'w', encoding='utf-8') as f:
             while True:
+                # 从队列获取数据
+                data = input_queue.get()
                 try:
-                    # 从队列获取数据
-                    data = input_queue.get()
-                    
                     # 检查是否是退出信号
                     if data == EXIT_SIGNAL:
                         print(f"Process {process_id} received exit signal, shutting down...")
@@ -86,7 +85,7 @@ def worker_process(process_id: int, input_queue: mp.Queue, init_done_queue: mp.Q
                     semantic_tokens = semantic_tokens.squeeze(0).squeeze(0).detach().cpu().tolist()
 
                     result = {
-                        'language': json_data['language'],
+                        'language': json_data['language'] if 'language' in json_data else 'zh',
                         'text': json_data['text'],
                         'global_tokens': global_tokens,
                         'semantic_tokens': semantic_tokens
@@ -123,10 +122,16 @@ def worker_process(process_id: int, input_queue: mp.Queue, init_done_queue: mp.Q
                 except queue.Empty:
                     continue
                 except Exception as e:
-                    import traceback
-                    traceback.print_exc()
                     print(f"Process {process_id} encountered error: {str(e)}")
-                    continue
+                    #save the error audio to a wav and a json file
+                    base_name = f'errs/{process_id}_error_{error_idx}'
+                    error_idx += 1
+                    audio_file_name = f'{base_name}.wav'
+                    json_file_name = f'{base_name}.json'
+                    torchaudio.save(audio_file_name, torch.from_numpy(audio_data).unsqueeze(0), sampling_rate)
+                    with open(json_file_name, 'w', encoding='utf-8') as f:
+                        json.dump(json_data, f, ensure_ascii=False)
+                    
                     
     except Exception as e:
         print(f"Process {process_id} failed to initialize: {str(e)}")
@@ -147,7 +152,7 @@ def main():
     parser.add_argument('--input_dir', type=str, default='/tmp/tmp_data/')
     parser.add_argument('--output_dir', type=str, default='/home/yueyulin/data/Emilia/ZH/tar_tokens/')
     parser.add_argument('--model_dir', type=str, default='/home/yueyulin/models/Spark-TTS-0.5B/')
-    parser.add_argument('--num_proc', type=int, default=4, help='Number of processes to use')
+    parser.add_argument('--num_proc', type=int, default=1, help='Number of processes to use')
     parser.add_argument('--from_index', type=int, default=0, help='Start index of files to process (inclusive)')
     parser.add_argument('--to_index', type=int, default=None, help='End index of files to process (exclusive)')
     args = parser.parse_args()
