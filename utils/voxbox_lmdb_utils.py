@@ -7,7 +7,7 @@ import json
 import os
 import hashlib
 def open_lmdb_for_read(lmdb_path):
-    env = lmdb.open(lmdb_path, map_size=1024*1024*1024*10, readonly=True)
+    env = lmdb.open(lmdb_path, map_size=1024*1024*1024*100, readonly=True)  # 100GB map size
     return env
 
 def get_json_from_lmdb(lmdb_env, text):
@@ -20,7 +20,7 @@ def create_lmdb(input_dir, output_dir):
     data_files = glob.glob(os.path.join(input_dir, "*.tar"))
     print(f"Found {len(data_files)} data files")
     lmdb_path = os.path.join(output_dir, "voxbox.lmdb")
-    env = lmdb.open(lmdb_path, map_size=1024*1024*1024*10)
+    env = lmdb.open(lmdb_path, map_size=1024*1024*1024*100)  # 100GB map size
     with env.begin(write=True) as txn:
         for data_file in tqdm.tqdm(data_files):
             dataset = RawMutltipleWebDataset([data_file])
