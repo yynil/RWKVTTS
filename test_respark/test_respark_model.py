@@ -9,7 +9,7 @@ import soundfile as sf
 
 def generate_speech(model, tokenizer, text, bicodec, prompt_text=None, prompt_audio=None, 
                    max_new_tokens=3000, do_sample=True, top_k=50, top_p=0.95, 
-                   temperature=1.0, device="cuda:0"):
+                   temperature=1.0, device="cuda:0", eos_token_id=8192):
     """
     生成语音的函数
     
@@ -30,8 +30,6 @@ def generate_speech(model, tokenizer, text, bicodec, prompt_text=None, prompt_au
     Returns:
         wav: 生成的音频波形
     """
-    # 设置eos_token_id - 根据训练代码，eos_token_id = model.config.vocab_size - 1
-    eos_token_id = model.config.vocab_size - 1
     print(f"EOS token ID: {eos_token_id}")
     
     # 生成输入嵌入
@@ -113,6 +111,7 @@ if __name__ == "__main__":
     parser.add_argument("--top_k", type=int, default=50, help="top-k采样参数")
     parser.add_argument("--top_p", type=float, default=0.95, help="top-p采样参数")
     parser.add_argument("--temperature", type=float, default=1.0, help="温度参数")
+    parser.add_argument("--eos_token_id", type=int, default=8192, help="EOS token ID")
     args = parser.parse_args()
 
     if args.dtype == "bfloat16":
@@ -132,8 +131,7 @@ if __name__ == "__main__":
         model.load_state_dict(torch.load(args.ckpt_file, map_location=args.device))
         print(f"Loaded checkpoint from {args.ckpt_file}")
     else:
-        print("No checkpoint file provided")
-        exit()
+        print("No checkpoint file provided using the model weights")
     
     # 加载分词器
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir, trust_remote_code=True)
@@ -188,7 +186,8 @@ if __name__ == "__main__":
             top_k=args.top_k,
             top_p=args.top_p,
             temperature=args.temperature,
-            device=args.device
+            device=args.device,
+            eos_token_id=args.eos_token_id
         )
         
         if wav is not None:
