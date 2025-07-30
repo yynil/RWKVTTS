@@ -16,8 +16,9 @@ import psutil
 import gc  # 添加 gc 模块导入
 from datetime import datetime
 from data.spark.multiple_webdataset import MultipleWebDataset
+from utils.RawMutltipleWebDataset import RawMutltipleWebDataset
 from tqdm import tqdm
-
+import io
 def get_available_gpu(process_id: int):
     """根据进程ID分配GPU，每个GPU最多分配两个进程"""
     try:
@@ -72,24 +73,30 @@ def worker_process(process_id: int, input_queue: mp.Queue, init_done_queue: mp.Q
                     json_data, audio_array, sampling_rate = data
                     
                     # 确保音频数据是float32类型
-                    audio_data = np.array(audio_array, dtype=np.float32)
+                    audio_data = audio_array
                     target_sample_rate = audio_tokenizer.config['sample_rate']
                     
                     if sampling_rate != target_sample_rate:
                         from librosa import resample
                         audio_data = resample(audio_data, orig_sr=sampling_rate, target_sr=target_sample_rate)
                         audio_data = np.array(audio_data, dtype=np.float32)
-                        
+                    if total_requests % 1000 == 0:
+                        print(f"Process {process_id} tokenizing audio data")
+                        print(f"audio_data shape: {audio_data.shape}")
+                        print(f"json_data: {json_data}")
                     global_tokens, semantic_tokens = audio_tokenizer.tokenize(audio_data)
                     global_tokens = global_tokens.squeeze(0).squeeze(0).detach().cpu().tolist()
                     semantic_tokens = semantic_tokens.squeeze(0).squeeze(0).detach().cpu().tolist()
-
+                    if total_requests % 1000 == 0:
+                        print(f"Process {process_id} tokenizing audio data")
+                        print(f"global_tokens: {global_tokens}")
+                        print(f"semantic_tokens: {semantic_tokens}")
                     result = {
                         'language': json_data['language'] if 'language' in json_data else 'zh',
-                        'text': json_data['text'],
                         'global_tokens': global_tokens,
                         'semantic_tokens': semantic_tokens
                     }
+                    result.update(json_data)
                     
                     # 写入JSONL文件
                     f.write(json.dumps(result, ensure_ascii=False) + '\n')
@@ -195,19 +202,37 @@ def main():
     all_tars = all_tars[args.from_index:args.to_index]
     all_tars = [os.path.join(args.input_dir, tar) for tar in all_tars]
     print(f"Processing {len(all_tars)} files from index {args.from_index} to {args.to_index}")
+    from sparktts.utils.audio import load_audio
     try:
         # 加载数据集
-        dataset = MultipleWebDataset(data_files=all_tars)
+        dataset = RawMutltipleWebDataset(data_files=all_tars)
         
         current_queue_idx = 0
         for i, item in enumerate(tqdm(dataset, desc=f"Processing Tars from {dir_name}")):
-            data = (item['json'], item['audio']['array'], item['audio']['sampling_rate'])
+            json_data = json.loads(item['json'])
+            keys = ["wav","mp3","flac"]
+            for key in keys:
+                if key in item:
+                    break
+            audio_buffer = io.BytesIO(item[key])
+            audio_tensor2, sample_rate2 = torchaudio.load(audio_buffer)
+            if audio_tensor2.shape[0] > 1:
+                # 将多声道音频转换为单声道
+                audio_tensor2 = audio_tensor2.mean(dim=0)
+            if sample_rate2 != 16000:
+                audio_tensor2 = torchaudio.transforms.Resample(orig_freq=sample_rate2,new_freq=16000)(audio_tensor2)
+            audio_array = audio_tensor2.numpy()[0]
+            del audio_tensor2
+            del audio_buffer
+            torch.cuda.empty_cache()
+            gc.collect()
+            data = (json_data, audio_array, 16000)
             
             # 轮询查找空闲队列
             max_attempts = args.num_proc
             attempts = 0
             while attempts < max_attempts:
-                if queues[current_queue_idx].qsize() < 100:  # 队列未满
+                if queues[current_queue_idx].qsize() < 10:  # 队列未满
                     queues[current_queue_idx].put(data)
                     current_queue_idx = (current_queue_idx + 1) % args.num_proc
                     break
