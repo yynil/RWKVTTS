@@ -64,12 +64,12 @@ GENDER_MAP = {
 }
 
 def convert_properties_to_tokens(age: str, gender: str, emotion: str, pitch: float, speed: float) -> list:
-    age_token = AGE_MAP[age]
-    gender_token = GENDER_MAP[gender]
-    emotion_token = EMOTION_MAP[emotion]
-    pitch_token = classify_pitch(pitch, gender, age)
-    speed_token = classify_speed(speed)
-    return "SPCT_1 "+age_token+' '+gender_token+' '+emotion_token+' '+pitch_token+' '+speed_token
+    age_token = AGE_MAP[age.lower()]
+    gender_token = GENDER_MAP[gender.lower()]
+    emotion_token = EMOTION_MAP[emotion.upper()]
+    pitch_token = PITCH_MAP[classify_pitch(pitch, gender.lower(), age.lower())]
+    speed_token = SPEED_MAP[classify_speed(speed)]
+    return "SPCT_1"+age_token+gender_token+emotion_token+pitch_token+speed_token
 
 def classify_speed(speed: float) -> str:
     """根据经验和领域知识划分语速为5档。"""

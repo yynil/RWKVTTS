@@ -69,8 +69,9 @@ def create_inputs_and_labels(batch, tokenizer, model, eos_token_id, device):
         "attention_mask": attention_mask
     }
 
-
+global_debug = True
 def create_inputs_and_labels_with_properties(batch, tokenizer, model, eos_token_id, device):
+    global global_debug
     texts = batch['text']
     global_tokens_list = batch['global_tokens']
     semantic_tokens_list = batch['semantic_tokens']
@@ -91,10 +92,13 @@ def create_inputs_and_labels_with_properties(batch, tokenizer, model, eos_token_
         pitch = pitches[i]
         speed = speeds[i]
         properties_tokens = convert_properties_to_tokens(age, gender, emotion, pitch, speed)
-        
+        if global_debug:
+            print(f"Befor tokenization properties_tokens: {properties_tokens}")
         text = texts[i]
         properties_tokens = tokenizer.encode(properties_tokens, add_special_tokens=False)
-        
+        if global_debug:
+            print(f"After tokenization properties_tokens: {properties_tokens}")
+            global_debug = False
         # 1. Get token IDs
         text_tokens = tokenizer.encode(text, add_special_tokens=False)
         global_tokens = global_tokens_list[i]

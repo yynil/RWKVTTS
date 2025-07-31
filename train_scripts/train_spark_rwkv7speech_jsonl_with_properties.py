@@ -503,7 +503,7 @@ def main():
                 is_main_process
             )
             
-            processed_batch = create_inputs_and_labels(batch, tokenizer, model_engine, eos_token_id, device)
+            processed_batch = create_inputs_and_labels_with_properties(batch, tokenizer, model_engine, eos_token_id, device)
             
             maxium_tokens = args.max_tokens_k * 1024  # 将 K 转换为实际 token 数
             current_batch_size,current_batch_seq_len,_ = processed_batch["input_embs"].shape
