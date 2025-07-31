@@ -23,7 +23,6 @@ import numpy as np
 from inference.rwkv7speech_inference import create_inputs
 
 logger = logging.getLogger(__name__)
-demo_text = "我们都是来自同一个地球，同一个梦想！同一片蓝天下！"
 @dataclass
 class ScriptArguments:
     """Command line arguments for training script"""
@@ -280,7 +279,7 @@ def train_step(model_engine, input_embs,labels,cu_seqlens=None,attention_mask=No
     }
 
 
-from utils.multiple_jsonl import create_inputs_and_labels
+from utils.multiple_jsonl import create_inputs_and_labels_with_properties
 
 def main():
     # Parse arguments
