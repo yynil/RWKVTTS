@@ -570,7 +570,7 @@ def main():
                 avg_loss = total_loss / total_steps
                 tokens = processed_batch["input_embs"].shape[0] * processed_batch["input_embs"].shape[1]
                 all_tokens += (tokens * world_size)
-                kts = tokens / elapsed_time / 1e3
+                kts =  (tokens * world_size) / elapsed_time / 1e3
                 
                 # 记录到wandb
                 current_lr = optimizer.param_groups[0]['lr']
