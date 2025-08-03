@@ -1,5 +1,6 @@
 import torch
 from utils.properties_util import convert_properties_to_tokens
+
 def create_inputs_and_labels(batch, tokenizer, model, eos_token_id, device):
     texts = batch['text']
     global_tokens_list = batch['global_tokens']
@@ -17,12 +18,12 @@ def create_inputs_and_labels(batch, tokenizer, model, eos_token_id, device):
         # 2. Convert to tensors on device
         text_tokens_tensor = torch.tensor(text_tokens, dtype=torch.long, device=device)
         global_tokens_tensor = torch.tensor(global_tokens, dtype=torch.long, device=device)
-        semantic_tokens_tensor = torch.tensor(semantic_tokens + [eos_token_id], dtype=torch.long, device=device)
+        semantic_tokens_to_predict = torch.tensor(semantic_tokens + [eos_token_id], dtype=torch.long, device=device)
 
         # 3. Get embeddings
         text_embs = model.text_embedder(text_tokens_tensor)
         global_embs = model.global_embedder(global_tokens_tensor)
-        semantic_embs = model.model.embeddings(semantic_tokens_tensor)
+        semantic_embs = model.model.embeddings(semantic_tokens_to_predict)
 
         # 4. Get special tag embeddings
         tag_0_emb = model.tts_tag_embedder(torch.tensor([0], dtype=torch.long, device=device))
@@ -40,12 +41,15 @@ def create_inputs_and_labels(batch, tokenizer, model, eos_token_id, device):
         ], dim=0)
         all_input_embs_list.append(full_embs_for_sample)
 
-        # 6. Create labels for one sample
-        prefix_len = 1 + len(text_tokens) + 1 + len(global_tokens)
+        # 6. Create labels for one sample, aligned with the input embeddings.
+        # The model's forward pass will handle shifting. We only calculate loss on semantic tokens.
+        prefix_len = 1 + len(text_tokens) + 1 + len(global_tokens) + 1 # TAG2, TEXT, TAG0, GLOBAL, TAG1
+        prefix_labels = torch.full((prefix_len,), -100, dtype=torch.long, device=device)
+        
+        # Labels are aligned with inputs. Lengths must match.
         labels_for_sample = torch.cat([
-            torch.full((prefix_len,), -100, dtype=torch.long, device=device),
-            semantic_tokens_tensor,
-            torch.tensor([-100], dtype=torch.long, device=device)
+            prefix_labels,
+            semantic_tokens_to_predict
         ], dim=0)
         all_labels_list.append(labels_for_sample)
 
@@ -74,7 +78,7 @@ def create_inputs_and_labels_culens(batch, tokenizer, model, eos_token_id, devic
     global_tokens_list = batch['global_tokens']
     semantic_tokens_list = batch['semantic_tokens']
     input_ids_embs_list = []
-    labels = []
+    labels_list = []
     cu_seqlens = [0]
 
     for i in range(len(texts)):
@@ -86,12 +90,12 @@ def create_inputs_and_labels_culens(batch, tokenizer, model, eos_token_id, devic
         # 2. Convert to tensors on device
         text_tokens_tensor = torch.tensor(text_tokens, dtype=torch.long, device=device)
         global_tokens_tensor = torch.tensor(global_tokens, dtype=torch.long, device=device)
-        semantic_tokens_tensor = torch.tensor(semantic_tokens + [eos_token_id], dtype=torch.long, device=device)
+        semantic_tokens_to_predict = torch.tensor(semantic_tokens + [eos_token_id], dtype=torch.long, device=device)
 
         # 3. Get embeddings
         text_embs = model.text_embedder(text_tokens_tensor)
         global_embs = model.global_embedder(global_tokens_tensor)
-        semantic_embs = model.model.embeddings(semantic_tokens_tensor)
+        semantic_embs = model.model.embeddings(semantic_tokens_to_predict)
 
         # 4. Get special tag embeddings
         tag_0_emb = model.tts_tag_embedder(torch.tensor([0], dtype=torch.long, device=device))
@@ -109,21 +113,20 @@ def create_inputs_and_labels_culens(batch, tokenizer, model, eos_token_id, devic
         ], dim=0)
         input_ids_embs_list.append(full_embs_for_sample)
 
-        # 6. Create labels for one sample
-        prefix_len = 1 + len(text_tokens) + 1 + len(global_tokens)
-        labels_for_sample = torch.cat([
-            torch.full((prefix_len,), -100, dtype=torch.long, device=device),
-            semantic_tokens_tensor,
-            torch.tensor([-100], dtype=torch.long, device=device)
-        ], dim=0)
-        labels.append(labels_for_sample)
+        # 6. Create labels for one sample, aligned with the input embeddings.
+        prefix_len = 1 + len(text_tokens) + 1 + len(global_tokens) + 1 # TAG2, TEXT, TAG0, GLOBAL, TAG1
+        prefix_labels = torch.full((prefix_len,), -100, dtype=torch.long, device=device)
         
-        last_length = cu_seqlens[-1]
-        my_length = full_embs_for_sample.shape[0]
-        cu_seqlens.append(last_length + my_length)
+        labels_for_sample = torch.cat([
+            prefix_labels,
+            semantic_tokens_to_predict
+        ], dim=0)
+        labels_list.append(labels_for_sample)
+        
+        cu_seqlens.append(cu_seqlens[-1] + len(full_embs_for_sample))
     
     input_embs = torch.cat(input_ids_embs_list, dim=0)
-    labels = torch.cat(labels, dim=0)
+    labels = torch.cat(labels_list, dim=0)
     cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.long, device=device)
     
     return {
@@ -149,74 +152,64 @@ def create_inputs_and_labels_with_properties(batch, tokenizer, model, eos_token_
     all_labels_list = []
 
     for i in range(len(texts)):
-        age = ages[i]
-        gender = genders[i]
-        emotion = emotions[i]
-        pitch = pitches[i]
-        speed = speeds[i]
-        properties_tokens = convert_properties_to_tokens(age, gender, emotion, pitch, speed)
-        if global_debug:
-            print(f"Befor tokenization properties_tokens: {properties_tokens}")
+        # --- Common setup for both samples ---
         text = texts[i]
-        properties_tokens = tokenizer.encode(properties_tokens, add_special_tokens=False)
-        if global_debug:
-            print(f"After tokenization properties_tokens: {properties_tokens}")
-            global_debug = False
-        # 1. Get token IDs
         text_tokens = tokenizer.encode(text, add_special_tokens=False)
         global_tokens = global_tokens_list[i]
         semantic_tokens = semantic_tokens_list[i]
 
-        # 2. Convert to tensors on device
         text_tokens_tensor = torch.tensor(text_tokens, dtype=torch.long, device=device)
-        properties_tokens_tensor = torch.tensor(properties_tokens, dtype=torch.long, device=device)
         global_tokens_tensor = torch.tensor(global_tokens, dtype=torch.long, device=device)
-        semantic_tokens_tensor = torch.tensor(semantic_tokens + [eos_token_id], dtype=torch.long, device=device)
+        semantic_tokens_to_predict = torch.tensor(semantic_tokens + [eos_token_id], dtype=torch.long, device=device)
 
-        # 3. Get embeddings
         text_embs = model.text_embedder(text_tokens_tensor)
-        properties_embs = model.text_embedder(properties_tokens_tensor)
         global_embs = model.global_embedder(global_tokens_tensor)
-        semantic_embs = model.model.embeddings(semantic_tokens_tensor)
+        semantic_embs = model.model.embeddings(semantic_tokens_to_predict)
 
-        # 4. Get special tag embeddings
         tag_0_emb = model.tts_tag_embedder(torch.tensor([0], dtype=torch.long, device=device))
         tag_1_emb = model.tts_tag_embedder(torch.tensor([1], dtype=torch.long, device=device))
         tag_2_emb = model.tts_tag_embedder(torch.tensor([2], dtype=torch.long, device=device))
 
-        # 5. Concatenate embeddings for one sample
+        # --- Sample 1: Standard TTS (no properties) ---
         full_embs_for_sample = torch.cat([
-            tag_2_emb, 
-            text_embs, 
-            tag_0_emb, 
-            global_embs, 
-            tag_1_emb, 
-            semantic_embs
+            tag_2_emb, text_embs, tag_0_emb, global_embs, tag_1_emb, semantic_embs
         ], dim=0)
-        full_embs_with_properties = torch.cat([
-            properties_embs,
-            full_embs_for_sample
-        ], dim=0)
-        all_input_embs_list.append(full_embs_for_sample)
-        all_input_embs_list.append(full_embs_with_properties)
+        
+        prefix_len_no_props = 1 + len(text_tokens) + 1 + len(global_tokens) + 1
+        prefix_labels_no_props = torch.full((prefix_len_no_props,), -100, dtype=torch.long, device=device)
+        labels_for_sample = torch.cat([prefix_labels_no_props, semantic_tokens_to_predict], dim=0)
 
-        # 6. Create labels for one sample
-        prefix_len = 1 + len(text_tokens) + 1 + len(global_tokens)
-        labels_for_sample = torch.cat([
-            torch.full((prefix_len,), -100, dtype=torch.long, device=device),
-            semantic_tokens_tensor,
-            torch.tensor([-100], dtype=torch.long, device=device)
-        ], dim=0)
-        #create labels for one sample with properties which makes global tokens and semantic tokens as training target
-        prefix_len = len(properties_tokens) + 1 + len(text_tokens)
-        labels_for_sample_with_properties = torch.cat([
-            torch.full((prefix_len,), -100, dtype=torch.long, device=device),
-            global_tokens_tensor,
-            torch.tensor([-100], dtype=torch.long, device=device),
-            semantic_tokens_tensor,
-            torch.tensor([-100], dtype=torch.long, device=device)
-        ], dim=0)
+        all_input_embs_list.append(full_embs_for_sample)
         all_labels_list.append(labels_for_sample)
+
+        # --- Sample 2: Controllable TTS (with properties) ---
+        properties_str = convert_properties_to_tokens(ages[i], genders[i], emotions[i], pitches[i], speeds[i])
+        properties_tokens = tokenizer.encode(properties_str, add_special_tokens=False)
+        if global_debug:
+            print(f"properties_str: {properties_str}")
+            print(f"properties_tokens: {properties_tokens}")
+            global_debug = False
+        properties_tokens_tensor = torch.tensor(properties_tokens, dtype=torch.long, device=device)
+        properties_embs = model.text_embedder(properties_tokens_tensor)
+
+        full_embs_with_properties = torch.cat([
+            properties_embs, full_embs_for_sample
+        ], dim=0)
+
+        # Goal: Predict global and semantic tokens
+        prefix_len_props = len(properties_tokens) + 1 + len(text_tokens) + 1 # PROPS, TAG2, TEXT, TAG0
+        prefix_labels_props = torch.full((prefix_len_props,), -100, dtype=torch.long, device=device)
+        ignore_tag1_label = torch.full((1,), -100, dtype=torch.long, device=device) # for TAG1
+
+        # Aligned labels: [IGNORE(PROPS..TAG0), GLOBAL_TOKENS, IGNORE(TAG1), SEMANTIC_TOKENS]
+        labels_for_sample_with_properties = torch.cat([
+            prefix_labels_props,
+            global_tokens_tensor,
+            ignore_tag1_label,
+            semantic_tokens_to_predict
+        ], dim=0)
+        
+        all_input_embs_list.append(full_embs_with_properties)
         all_labels_list.append(labels_for_sample_with_properties)
 
     # Pad the lists of tensors
@@ -241,7 +234,6 @@ def create_inputs_and_labels_with_properties(batch, tokenizer, model, eos_token_
 
 
 def create_inputs_and_labels_with_properties_culens(batch, tokenizer, model, eos_token_id, device):
-    global global_debug
     texts = batch['text']
     global_tokens_list = batch['global_tokens']
     semantic_tokens_list = batch['semantic_tokens']
@@ -251,89 +243,66 @@ def create_inputs_and_labels_with_properties_culens(batch, tokenizer, model, eos
     pitches = batch['pitch']
     speeds = batch['speed']
     input_ids_embs_list = []
-    labels = []
+    labels_list = []
     cu_seqlens = [0]
 
-
     for i in range(len(texts)):
-        age = ages[i]
-        gender = genders[i]
-        emotion = emotions[i]
-        pitch = pitches[i]
-        speed = speeds[i]
-        properties_tokens = convert_properties_to_tokens(age, gender, emotion, pitch, speed)
-        if global_debug:
-            print(f"Befor tokenization properties_tokens: {properties_tokens}")
+        # --- Common setup for both samples ---
         text = texts[i]
-        properties_tokens = tokenizer.encode(properties_tokens, add_special_tokens=False)
-        if global_debug:
-            print(f"After tokenization properties_tokens: {properties_tokens}")
-            global_debug = False
-        # 1. Get token IDs
         text_tokens = tokenizer.encode(text, add_special_tokens=False)
         global_tokens = global_tokens_list[i]
         semantic_tokens = semantic_tokens_list[i]
 
-        # 2. Convert to tensors on device
         text_tokens_tensor = torch.tensor(text_tokens, dtype=torch.long, device=device)
-        properties_tokens_tensor = torch.tensor(properties_tokens, dtype=torch.long, device=device)
         global_tokens_tensor = torch.tensor(global_tokens, dtype=torch.long, device=device)
-        semantic_tokens_tensor = torch.tensor(semantic_tokens + [eos_token_id], dtype=torch.long, device=device)
+        semantic_tokens_to_predict = torch.tensor(semantic_tokens + [eos_token_id], dtype=torch.long, device=device)
 
-        # 3. Get embeddings
         text_embs = model.text_embedder(text_tokens_tensor)
-        properties_embs = model.text_embedder(properties_tokens_tensor)
         global_embs = model.global_embedder(global_tokens_tensor)
-        semantic_embs = model.model.embeddings(semantic_tokens_tensor)
+        semantic_embs = model.model.embeddings(semantic_tokens_to_predict)
 
-        # 4. Get special tag embeddings
         tag_0_emb = model.tts_tag_embedder(torch.tensor([0], dtype=torch.long, device=device))
         tag_1_emb = model.tts_tag_embedder(torch.tensor([1], dtype=torch.long, device=device))
         tag_2_emb = model.tts_tag_embedder(torch.tensor([2], dtype=torch.long, device=device))
 
-        # 5. Concatenate embeddings for one sample
+        # --- Sample 1: Standard TTS (no properties) ---
         full_embs_for_sample = torch.cat([
-            tag_2_emb, 
-            text_embs, 
-            tag_0_emb, 
-            global_embs, 
-            tag_1_emb, 
-            semantic_embs
+            tag_2_emb, text_embs, tag_0_emb, global_embs, tag_1_emb, semantic_embs
         ], dim=0)
-        full_embs_with_properties = torch.cat([
-            properties_embs,
-            full_embs_for_sample
-        ], dim=0)
-        input_ids_embs_list.append(full_embs_for_sample)
-        input_ids_embs_list.append(full_embs_with_properties)
+        
+        prefix_len_no_props = 1 + len(text_tokens) + 1 + len(global_tokens) + 1
+        prefix_labels_no_props = torch.full((prefix_len_no_props,), -100, dtype=torch.long, device=device)
+        labels_for_sample = torch.cat([prefix_labels_no_props, semantic_tokens_to_predict], dim=0)
 
-        # 6. Create labels for one sample
-        prefix_len = 1 + len(text_tokens) + 1 + len(global_tokens)
-        labels_for_sample = torch.cat([
-            torch.full((prefix_len,), -100, dtype=torch.long, device=device),
-            semantic_tokens_tensor,
-            torch.tensor([-100], dtype=torch.long, device=device)
+        input_ids_embs_list.append(full_embs_for_sample)
+        labels_list.append(labels_for_sample)
+        cu_seqlens.append(cu_seqlens[-1] + len(full_embs_for_sample))
+
+        # --- Sample 2: Controllable TTS (with properties) ---
+        properties_str = convert_properties_to_tokens(ages[i], genders[i], emotions[i], pitches[i], speeds[i])
+        properties_tokens = tokenizer.encode(properties_str, add_special_tokens=False)
+        properties_tokens_tensor = torch.tensor(properties_tokens, dtype=torch.long, device=device)
+        properties_embs = model.text_embedder(properties_tokens_tensor)
+
+        full_embs_with_properties = torch.cat([
+            properties_embs, full_embs_for_sample
         ], dim=0)
-        #create labels for one sample with properties which makes global tokens and semantic tokens as training target
-        prefix_len = len(properties_tokens) + 1 + len(text_tokens)
+
+        prefix_len_props = len(properties_tokens) + 1 + len(text_tokens) + 1
+        prefix_labels_props = torch.full((prefix_len_props,), -100, dtype=torch.long, device=device)
+        ignore_tag1_label = torch.full((1,), -100, dtype=torch.long, device=device)
+
         labels_for_sample_with_properties = torch.cat([
-            torch.full((prefix_len,), -100, dtype=torch.long, device=device),
-            global_tokens_tensor,
-            torch.tensor([-100], dtype=torch.long, device=device),
-            semantic_tokens_tensor,
-            torch.tensor([-100], dtype=torch.long, device=device)
+            prefix_labels_props, global_tokens_tensor, ignore_tag1_label, semantic_tokens_to_predict
         ], dim=0)
-        labels.append(labels_for_sample)
-        labels.append(labels_for_sample_with_properties)
-        last_length = cu_seqlens[-1]
-        my_length0 = full_embs_for_sample.shape[0]
-        my_length1 = full_embs_with_properties.shape[0]
-        cu_seqlens.append(last_length+my_length0)
-        cu_seqlens.append(last_length+my_length1+my_length0)
-    input_embs = torch.cat(input_ids_embs_list,dim=0)
-    labels = torch.cat(labels,dim=0)
-    cu_seqlens = torch.tensor(cu_seqlens,dtype=torch.long,device=device)
-    
+        
+        input_ids_embs_list.append(full_embs_with_properties)
+        labels_list.append(labels_for_sample_with_properties)
+        cu_seqlens.append(cu_seqlens[-1] + len(full_embs_with_properties))
+
+    input_embs = torch.cat(input_ids_embs_list, dim=0)
+    labels = torch.cat(labels_list, dim=0)
+    cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.long, device=device)
     
     return {
         "input_embs": input_embs.unsqueeze(0),
