@@ -453,8 +453,8 @@ def main():
                 adjusted_length = processed_batch["cu_seqlens"][bsz-1]
             if bsz < processed_batch["cu_seqlens"].shape[0]:
                 print(f'shrink the batch size from {processed_batch["cu_seqlens"].shape[0]} to {bsz}')
-                processed_batch["input_embs"][0] = processed_batch["input_embs"][0][:adjusted_length]
-                processed_batch["labels"][0] = processed_batch["labels"][0][:adjusted_length]
+                processed_batch["input_embs"] = processed_batch["input_embs"][:,:adjusted_length,:]
+                processed_batch["labels"] = processed_batch["labels"][:,:adjusted_length]
                 processed_batch["cu_seqlens"] = processed_batch["cu_seqlens"][:bsz]
             
             # current_batch_size, current_batch_seq_len, _ = processed_batch["input_embs"].shape
