@@ -569,7 +569,7 @@ def main():
                 # 计算平均值
                 avg_loss = total_loss / total_steps
                 tokens = processed_batch["input_embs"].shape[0] * processed_batch["input_embs"].shape[1]
-                all_tokens += tokens
+                all_tokens += (tokens * world_size)
                 kts = tokens / elapsed_time / 1e3
                 
                 # 记录到wandb
@@ -580,7 +580,10 @@ def main():
                 pbar.set_postfix({
                     'loss': loss.item(),
                     'avg_loss': avg_loss,
-                    'lr': current_lr
+                    'lr': current_lr,
+                    "kts": kts,
+                    "steps": total_steps,
+                    "epoch": epoch
                 })
         
         #save checkpoint at the end of each epoch
