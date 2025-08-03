@@ -144,6 +144,11 @@ class ScriptArguments:
         metadata={"help": "Maximum tokens in K units (e.g. 32 means 32K tokens)"}
     )
 
+    use_cu_seqlens: bool = field(
+        default=False,
+        metadata={"help": "Use cu_seqlens"}
+    )
+
 def setup_logging(local_rank):
     """Configure logging"""
     if local_rank <= 0:
@@ -280,7 +285,7 @@ def train_step(model_engine, input_embs,labels,cu_seqlens=None,attention_mask=No
     }
 
 
-from utils.multiple_jsonl import create_inputs_and_labels
+from utils.multiple_jsonl import create_inputs_and_labels,create_inputs_and_labels_culens
 
 def main():
     # Parse arguments
@@ -504,22 +509,43 @@ def main():
                 is_main_process
             )
             
-            processed_batch = create_inputs_and_labels(batch, tokenizer, model_engine, eos_token_id, device)
+            if args.use_cu_seqlens:
+                processed_batch = create_inputs_and_labels_culens(batch, tokenizer, model_engine, eos_token_id, device)
+            else:
+                processed_batch = create_inputs_and_labels(batch, tokenizer, model_engine, eos_token_id, device)
             
             maxium_tokens = args.max_tokens_k * 1024  # 将 K 转换为实际 token 数
-            current_batch_size,current_batch_seq_len,_ = processed_batch["input_embs"].shape
-            max_batch_size = maxium_tokens // current_batch_seq_len
-            if max_batch_size < current_batch_size:
-                print(f'max_batch_size < current_batch_size, max_batch_size: {max_batch_size}, current_batch_size: {current_batch_size} shrink the batch size')
-                processed_batch["input_embs"] = processed_batch["input_embs"][:max_batch_size]
-                processed_batch["labels"] = processed_batch["labels"][:max_batch_size]
-                processed_batch["attention_mask"] = processed_batch["attention_mask"][:max_batch_size]
+            if args.use_cu_seqlens:
+                bsz = processed_batch["cu_seqlens"].shape[0]
+                adjusted_length = processed_batch["cu_seqlens"][bsz-1]
+                while bsz > 0 and adjusted_length > maxium_tokens:
+                    bsz -= 1
+                    adjusted_length = processed_batch["cu_seqlens"][bsz-1]
+                if bsz < processed_batch["cu_seqlens"].shape[0]:
+                    print(f'shrink the batch size from {processed_batch["cu_seqlens"].shape[0]} to {bsz}')
+                    # 截断 input_embs 和 labels 到 adjusted_length
+                    processed_batch["input_embs"] = processed_batch["input_embs"][:, :adjusted_length, :]
+                    processed_batch["labels"] = processed_batch["labels"][:, :adjusted_length]
+                    # 截断 cu_seqlens 到 bsz
+                    processed_batch["cu_seqlens"] = processed_batch["cu_seqlens"][:bsz]
+            else:
+                current_batch_size,current_batch_seq_len,_ = processed_batch["input_embs"].shape
+                max_batch_size = maxium_tokens // current_batch_seq_len
+                if max_batch_size < current_batch_size:
+                    print(f'max_batch_size < current_batch_size, max_batch_size: {max_batch_size}, current_batch_size: {current_batch_size} shrink the batch size')
+                    processed_batch["input_embs"] = processed_batch["input_embs"][:max_batch_size]
+                    processed_batch["labels"] = processed_batch["labels"][:max_batch_size]
+                    processed_batch["attention_mask"] = processed_batch["attention_mask"][:max_batch_size]
 
             if is_main_process and batch_idx == 0:
                 print(f'input_embs shape: {processed_batch["input_embs"].shape}')
                 print(f'labels shape: {processed_batch["labels"].shape}')
-                print(f'attention_mask shape: {processed_batch["attention_mask"].shape}')
-                print(f'attention_mask: {processed_batch["attention_mask"]}')
+                if not args.use_cu_seqlens:
+                    print(f'attention_mask shape: {processed_batch["attention_mask"].shape}')
+                    print(f'attention_mask: {processed_batch["attention_mask"]}')
+                else:
+                    print(f'cu_seqlens shape: {processed_batch["cu_seqlens"].shape}')
+                    print(f'cu_seqlens: {processed_batch["cu_seqlens"]}')
 
             output = train_step(model_engine, **processed_batch)
             loss = output['loss']

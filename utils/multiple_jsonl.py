@@ -69,6 +69,69 @@ def create_inputs_and_labels(batch, tokenizer, model, eos_token_id, device):
         "attention_mask": attention_mask
     }
 
+def create_inputs_and_labels_culens(batch, tokenizer, model, eos_token_id, device):
+    texts = batch['text']
+    global_tokens_list = batch['global_tokens']
+    semantic_tokens_list = batch['semantic_tokens']
+    input_ids_embs_list = []
+    labels = []
+    cu_seqlens = [0]
+
+    for i in range(len(texts)):
+        # 1. Get token IDs
+        text_tokens = tokenizer.encode(texts[i], add_special_tokens=False)
+        global_tokens = global_tokens_list[i]
+        semantic_tokens = semantic_tokens_list[i]
+
+        # 2. Convert to tensors on device
+        text_tokens_tensor = torch.tensor(text_tokens, dtype=torch.long, device=device)
+        global_tokens_tensor = torch.tensor(global_tokens, dtype=torch.long, device=device)
+        semantic_tokens_tensor = torch.tensor(semantic_tokens + [eos_token_id], dtype=torch.long, device=device)
+
+        # 3. Get embeddings
+        text_embs = model.text_embedder(text_tokens_tensor)
+        global_embs = model.global_embedder(global_tokens_tensor)
+        semantic_embs = model.model.embeddings(semantic_tokens_tensor)
+
+        # 4. Get special tag embeddings
+        tag_0_emb = model.tts_tag_embedder(torch.tensor([0], dtype=torch.long, device=device))
+        tag_1_emb = model.tts_tag_embedder(torch.tensor([1], dtype=torch.long, device=device))
+        tag_2_emb = model.tts_tag_embedder(torch.tensor([2], dtype=torch.long, device=device))
+
+        # 5. Concatenate embeddings for one sample
+        full_embs_for_sample = torch.cat([
+            tag_2_emb, 
+            text_embs, 
+            tag_0_emb, 
+            global_embs, 
+            tag_1_emb, 
+            semantic_embs
+        ], dim=0)
+        input_ids_embs_list.append(full_embs_for_sample)
+
+        # 6. Create labels for one sample
+        prefix_len = 1 + len(text_tokens) + 1 + len(global_tokens)
+        labels_for_sample = torch.cat([
+            torch.full((prefix_len,), -100, dtype=torch.long, device=device),
+            semantic_tokens_tensor,
+            torch.tensor([-100], dtype=torch.long, device=device)
+        ], dim=0)
+        labels.append(labels_for_sample)
+        
+        last_length = cu_seqlens[-1]
+        my_length = full_embs_for_sample.shape[0]
+        cu_seqlens.append(last_length + my_length)
+    
+    input_embs = torch.cat(input_ids_embs_list, dim=0)
+    labels = torch.cat(labels, dim=0)
+    cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.long, device=device)
+    
+    return {
+        "input_embs": input_embs.unsqueeze(0),
+        "labels": labels.unsqueeze(0),
+        "cu_seqlens": cu_seqlens
+    }
+
 global_debug = True
 def create_inputs_and_labels_with_properties(batch, tokenizer, model, eos_token_id, device):
     global global_debug
