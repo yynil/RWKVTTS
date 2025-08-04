@@ -23,7 +23,6 @@ import numpy as np
 from inference.rwkv7speech_inference import create_inputs
 
 logger = logging.getLogger(__name__)
-demo_text = "我们都是来自同一个地球，同一个梦想！同一片蓝天下！"
 @dataclass
 class ScriptArguments:
     """Command line arguments for training script"""
@@ -147,6 +146,11 @@ class ScriptArguments:
     use_cu_seqlens: bool = field(
         default=False,
         metadata={"help": "Use cu_seqlens"}
+    )
+
+    num_layers_to_train: int = field(
+        default=2,
+        metadata={"help": "Number of RWKV7Block layers to train"}
     )
 
 def setup_logging(local_rank):
@@ -285,7 +289,7 @@ def train_step(model_engine, input_embs,labels,cu_seqlens=None,attention_mask=No
     }
 
 
-from utils.multiple_jsonl import create_inputs_and_labels,create_inputs_and_labels_culens
+from utils.multiple_jsonl import create_inputs_and_labels_with_properties_global_tokens,create_inputs_and_labels_with_properties_global_tokens_culens
 
 def main():
     # Parse arguments
@@ -407,6 +411,24 @@ def main():
         model.gradient_checkpointing_enable()
     model.train()
     
+    #only text_embedder, global_embedder, tts_tag_embedder,lm_head are trainable
+    for n,p in model.named_parameters():
+        if "text_embedder" in n or "global_embedder" in n or "tts_tag_embedder" in n or "lm_head" in n:
+            p.requires_grad = True
+        else:
+            p.requires_grad = False
+    if args.num_layers_to_train > 0:
+        print(f'Train the first {args.num_layers_to_train} layers')
+        trainable_layers_names = [f'model.layers.{i}.' for i in range(args.num_layers_to_train)]
+        for n,p in model.named_parameters():
+            if "model.layers." in n:
+                if any(trainable_layer_name in n for trainable_layer_name in trainable_layers_names):
+                    p.requires_grad = True
+                else:
+                    p.requires_grad = False
+    if is_main_process:
+        for n,p in model.named_parameters():
+            print(f'{n} requires grad: {p.requires_grad}')
     if args.ckpt_file is not None:
         if is_main_process:
             logger.info(f"Loading checkpoint from {args.ckpt_file}")
@@ -414,15 +436,7 @@ def main():
         if is_main_process:
             logger.info(f"Loaded checkpoint info: {info}")
     model.train()
-    
-    if is_main_process:
-        logger.info(f'Enable gradient checkpointing: {args.gradient_checkpointing}')
-    for n,p in model.named_parameters():
-        p.requires_grad = True
-    if is_main_process:
-        for n,p in model.named_parameters():
-            print(f'{n} requires grad: {p.requires_grad}')
-        logger.info(f'start configuring optimizer')
+    logger.info(f'start configuring optimizer')
     optimizer = configure_optimizer(model, args)
     # Initialize DeepSpeed for main model
     model_engine, optimizer, _, _ = deepspeed.initialize(
@@ -464,8 +478,6 @@ def main():
     total_steps = 0
     all_tokens = 0
     global_steps = 0
-    #We do drop out at the training loop which is a lack of feature in the model
-    dropout = torch.nn.Dropout(0.02)
 
     print(f'warming up the model')
     model_engine.train()
@@ -476,8 +488,10 @@ def main():
     print(f'dummy_attn_mask: {dummy_attn_mask.shape}')
     print(f'dummy_labels: {dummy_labels.shape}')
     outputs = model_engine(inputs_embeds=dummy_input_embs, attention_mask=dummy_attn_mask, labels=dummy_labels,use_cache=False)
+    print(f'outputs: {outputs}')
     loss = outputs.loss
-    print(f'warm up loss: {loss} device: {device}')
+    #zero loss, no need to update the model
+    loss = 0.0 * loss
     model_engine.backward(loss)
     model_engine.step()
     print(f'model warmed up')
@@ -508,11 +522,10 @@ def main():
                 args,
                 is_main_process
             )
-            
             if args.use_cu_seqlens:
-                processed_batch = create_inputs_and_labels_culens(batch, tokenizer, model_engine, eos_token_id, device)
+                processed_batch = create_inputs_and_labels_with_properties_global_tokens_culens(batch, tokenizer, model_engine, eos_token_id, device)
             else:
-                processed_batch = create_inputs_and_labels(batch, tokenizer, model_engine, eos_token_id, device)
+                processed_batch = create_inputs_and_labels_with_properties_global_tokens(batch, tokenizer, model_engine, eos_token_id, device)
             
             maxium_tokens = args.max_tokens_k * 1024  # 将 K 转换为实际 token 数
             if args.use_cu_seqlens:
@@ -573,8 +586,8 @@ def main():
                 # 计算平均值
                 avg_loss = total_loss / total_steps
                 tokens = processed_batch["input_embs"].shape[0] * processed_batch["input_embs"].shape[1]
-                all_tokens += (tokens*world_size)
-                kts =  (tokens*world_size) / elapsed_time / 1e3
+                all_tokens += (tokens * world_size)
+                kts =  (tokens * world_size) / elapsed_time / 1e3
                 
                 # 记录到wandb
                 current_lr = optimizer.param_groups[0]['lr']
