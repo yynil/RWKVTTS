@@ -4,6 +4,7 @@ import torch
 import numpy as np
 from transformers import AutoTokenizer
 from sparktts.models.audio_tokenizer import BiCodecTokenizer
+from utils.properties_util import convert_properties_to_tokens
 
 def get_tokenizer(model_dir):
     tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
@@ -30,6 +31,58 @@ def get_respark_tts_tokenizer(model_dir):
         added_tokens = json.load(f)
     tokenizer.add_special_tokens(added_tokens)
     return tokenizer,original_vocab_size
+
+def generate_global_tokens(model, tokenizer, text, age: str, gender: str, emotion: str, pitch: float, speed: float,
+                           num_global_tokens: int = 4096):
+    device = (next(model.parameters()).device) 
+    properties_tokens = convert_properties_to_tokens(age, gender, emotion, pitch, speed)
+    print(f'properties_tokens: {properties_tokens}')
+    text_tokens = tokenizer.encode(text, add_special_tokens=False)
+    properties_tokens = tokenizer.encode(properties_tokens, add_special_tokens=False)
+    print(f'properties_tokens: {properties_tokens}')
+    text_tokens_tensor = torch.tensor(text_tokens, dtype=torch.long, device=device)
+    properties_tokens_tensor = torch.tensor(properties_tokens, dtype=torch.long, device=device)
+    text_embs = model.text_embedder(text_tokens_tensor)
+    properties_embs = model.text_embedder(properties_tokens_tensor)
+    tag_0_emb = model.tts_tag_embedder(torch.tensor([0], dtype=torch.long, device=device))
+    tag_1_emb = model.tts_tag_embedder(torch.tensor([1], dtype=torch.long, device=device))
+    tag_2_emb = model.tts_tag_embedder(torch.tensor([2], dtype=torch.long, device=device))
+    full_embs_for_sample = torch.cat([
+        properties_embs,
+        tag_2_emb, text_embs, tag_0_emb, tag_1_emb
+    ], dim=0)
+    vocab_size = model.config.vocab_size
+    eos_token_id = vocab_size - 1
+    suppress_tokens = [id for id in range(num_global_tokens,vocab_size)]
+    gen_args = {
+        "inputs_embeds":full_embs_for_sample.unsqueeze(0),
+        "attention_mask":torch.ones((1, full_embs_for_sample.shape[1]),dtype=torch.long,device=device),
+        "max_new_tokens":32,
+        "min_new_tokens":32,
+        "do_sample":True,
+        "top_k":50,
+        "top_p":0.95,
+        "temperature":1.0,
+        "eos_token_id":eos_token_id,
+        "pad_token_id":tokenizer.pad_token_id,
+        "use_cache":True,
+        "suppress_tokens":suppress_tokens,
+    }
+    generated_outputs = model.generate(**gen_args)
+    return generated_outputs
+
+def generate_input_embeddings(model,tokenizer,text,global_tokens):
+    device = (next(model.parameters()).device) 
+    text_tokens = tokenizer.encode(text, add_special_tokens=False)
+    text_tokens_tensor = torch.tensor(text_tokens, dtype=torch.long, device=device)
+    text_embs = model.text_embedder(text_tokens_tensor)
+    global_tokens_tensor = torch.tensor(global_tokens, dtype=torch.long, device=device)
+    global_embs = model.global_embedder(global_tokens_tensor)
+    tag_0_emb = model.tts_tag_embedder(torch.tensor([0], dtype=torch.long, device=device))
+    tag_1_emb = model.tts_tag_embedder(torch.tensor([1], dtype=torch.long, device=device))
+    tag_2_emb = model.tts_tag_embedder(torch.tensor([2], dtype=torch.long, device=device))
+    input_embs = torch.cat([tag_2_emb,text_embs,tag_0_emb,global_embs,tag_1_emb],dim=0)
+    return input_embs
 
 def generate_embeddings(model, tokenizer, text, bicodec, prompt_text=None, prompt_audio=None):
     """

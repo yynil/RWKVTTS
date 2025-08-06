@@ -69,7 +69,7 @@ def convert_properties_to_tokens(age: str, gender: str, emotion: str, pitch: flo
     emotion_token = EMOTION_MAP[emotion.upper()]
     pitch_token = PITCH_MAP[classify_pitch(pitch, gender.lower(), age.lower())]
     speed_token = SPEED_MAP[classify_speed(speed)]
-    return "SPCT_1"+age_token+gender_token+emotion_token+pitch_token+speed_token
+    return "SPCT_0"+age_token+gender_token+emotion_token+pitch_token+speed_token
 
 def classify_speed(speed: float) -> str:
     """根据经验和领域知识划分语速为5档。"""
