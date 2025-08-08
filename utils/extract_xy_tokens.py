@@ -81,10 +81,9 @@ def worker_process(process_id: int, input_queue: mp.Queue, init_done_queue: mp.Q
                         speech_tokens = speech_tokens.detach().cpu().tolist()
 
                     result = {
-                        'language': json_data.get('language', 'ZH'),
-                        'text': json_data['text'],
                         'audio_tokens': speech_tokens
                     }
+                    result.update(json_data)
 
                     f.write(json.dumps(result, ensure_ascii=False) + '\n')
                     f.flush()

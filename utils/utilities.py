@@ -34,6 +34,7 @@ def get_respark_tts_tokenizer(model_dir):
 
 def generate_global_tokens(model, tokenizer, text, age: str, gender: str, emotion: str, pitch: float, speed: float,
                            num_global_tokens: int = 4096):
+    print(f'age: {age}, gender: {gender}, emotion: {emotion}, pitch: {pitch}, speed: {speed}')
     device = (next(model.parameters()).device) 
     properties_tokens = convert_properties_to_tokens(age, gender, emotion, pitch, speed)
     print(f'properties_tokens: {properties_tokens}')
