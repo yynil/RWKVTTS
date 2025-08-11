@@ -60,6 +60,14 @@ GENDER_MAP = {
     "male": "SPCT_47"
 }
 
+def convert_standard_properties_to_tokens(age: str, gender: str, emotion: str, pitch: str, speed: str) -> list:
+    age_token = AGE_MAP[age.lower()]
+    gender_token = GENDER_MAP[gender.lower()]
+    emotion_token = EMOTION_MAP[emotion.upper()]
+    pitch_token = PITCH_MAP[pitch.lower()]
+    speed_token = SPEED_MAP[speed.lower()]
+    return "SPCT_0"+age_token+gender_token+emotion_token+pitch_token+speed_token
+
 def convert_properties_to_tokens(age: str, gender: str, emotion: str, pitch: float, speed: float) -> list:
     age_token = AGE_MAP[age.lower()]
     gender_token = GENDER_MAP[gender.lower()]

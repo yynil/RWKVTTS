@@ -4,7 +4,64 @@ import torch
 import numpy as np
 from transformers import AutoTokenizer
 from sparktts.models.audio_tokenizer import BiCodecTokenizer
-from utils.properties_util import convert_properties_to_tokens
+from utils.properties_util import convert_standard_properties_to_tokens
+
+def print_properties_info(age: str, gender: str, emotion: str, pitch: float, speed: float):
+    """
+    打印属性信息的辅助函数
+    
+    Args:
+        age: 年龄
+        gender: 性别
+        emotion: 情感
+        pitch: 音调
+        speed: 速度
+    """
+    print(f'age: {age}, gender: {gender}, emotion: {emotion}, pitch: {pitch}, speed: {speed}')
+
+def extract_embeddings_for_global_tokens(model, tokenizer, text, age: str, gender: str, emotion: str, pitch: float, speed: float,global_tokens: list = None):
+    """
+    提取生成全局tokens所需的embedding
+    
+    Args:
+        model: 模型实例
+        tokenizer: 分词器
+        text: 输入文本
+        age: 年龄
+        gender: 性别
+        emotion: 情感
+        pitch: 音调
+        speed: 速度
+        global_tokens: 全局tokens
+    Returns:
+        torch.Tensor: 拼接后的完整embedding
+    """
+    device = (next(model.parameters()).device) 
+    properties_tokens = convert_standard_properties_to_tokens(age, gender, emotion, pitch, speed)
+    print(f'properties_tokens: {properties_tokens}')
+    text_tokens = tokenizer.encode(text, add_special_tokens=False)
+    properties_tokens = tokenizer.encode(properties_tokens, add_special_tokens=False)
+    print(f'properties_tokens: {properties_tokens}')
+    text_tokens_tensor = torch.tensor(text_tokens, dtype=torch.long, device=device)
+    properties_tokens_tensor = torch.tensor(properties_tokens, dtype=torch.long, device=device)
+    text_embs = model.text_embedder(text_tokens_tensor)
+    properties_embs = model.text_embedder(properties_tokens_tensor)
+    tag_0_emb = model.tts_tag_embedder(torch.tensor([0], dtype=torch.long, device=device))
+    tag_1_emb = model.tts_tag_embedder(torch.tensor([1], dtype=torch.long, device=device))
+    tag_2_emb = model.tts_tag_embedder(torch.tensor([2], dtype=torch.long, device=device))
+    full_embs_for_sample = torch.cat([
+        properties_embs,
+        tag_2_emb, text_embs, tag_0_emb,
+    ], dim=0)
+    if global_tokens is not None:
+        global_tokens_tensor = torch.tensor(global_tokens, dtype=torch.long, device=device)
+        global_embs = model.global_embedder(global_tokens_tensor)
+        full_embs_for_sample = torch.cat([
+            full_embs_for_sample,
+            global_embs,
+            tag_1_emb
+        ], dim=0)
+    return full_embs_for_sample
 
 def get_tokenizer(model_dir):
     tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
@@ -34,24 +91,9 @@ def get_respark_tts_tokenizer(model_dir):
 
 def generate_global_tokens(model, tokenizer, text, age: str, gender: str, emotion: str, pitch: float, speed: float,
                            num_global_tokens: int = 4096):
-    print(f'age: {age}, gender: {gender}, emotion: {emotion}, pitch: {pitch}, speed: {speed}')
-    device = (next(model.parameters()).device) 
-    properties_tokens = convert_properties_to_tokens(age, gender, emotion, pitch, speed)
-    print(f'properties_tokens: {properties_tokens}')
-    text_tokens = tokenizer.encode(text, add_special_tokens=False)
-    properties_tokens = tokenizer.encode(properties_tokens, add_special_tokens=False)
-    print(f'properties_tokens: {properties_tokens}')
-    text_tokens_tensor = torch.tensor(text_tokens, dtype=torch.long, device=device)
-    properties_tokens_tensor = torch.tensor(properties_tokens, dtype=torch.long, device=device)
-    text_embs = model.text_embedder(text_tokens_tensor)
-    properties_embs = model.text_embedder(properties_tokens_tensor)
-    tag_0_emb = model.tts_tag_embedder(torch.tensor([0], dtype=torch.long, device=device))
-    tag_1_emb = model.tts_tag_embedder(torch.tensor([1], dtype=torch.long, device=device))
-    tag_2_emb = model.tts_tag_embedder(torch.tensor([2], dtype=torch.long, device=device))
-    full_embs_for_sample = torch.cat([
-        properties_embs,
-        tag_2_emb, text_embs, tag_0_emb, tag_1_emb
-    ], dim=0)
+    print_properties_info(age, gender, emotion, pitch, speed)
+    full_embs_for_sample = extract_embeddings_for_global_tokens(model, tokenizer, text, age, gender, emotion, pitch, speed)
+    device = full_embs_for_sample.device
     vocab_size = model.config.vocab_size
     eos_token_id = vocab_size - 1
     suppress_tokens = [id for id in range(num_global_tokens,vocab_size)]
@@ -68,7 +110,9 @@ def generate_global_tokens(model, tokenizer, text, age: str, gender: str, emotio
         "pad_token_id":tokenizer.pad_token_id,
         "use_cache":True,
         "suppress_tokens":suppress_tokens,
+        "return_dict_in_generate":True,
     }
+    print(f'input_embs shape: {full_embs_for_sample.shape}')
     generated_outputs = model.generate(**gen_args)
     return generated_outputs
 
