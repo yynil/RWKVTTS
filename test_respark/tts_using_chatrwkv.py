@@ -10,7 +10,30 @@ import torch
 import numpy as np
 from torch.nn import functional as F
 from math import inf
+from tn.chinese.normalizer import Normalizer as ChineseNormalizer
+from tn.english.normalizer import Normalizer as EnglishNormalizer
+chinese_normalizer = ChineseNormalizer(remove_erhua=False, full_to_half=False, overwrite_cache=False, remove_interjections=False)
+english_normalizer = EnglishNormalizer()
 from utils.utilities import generate_global_tokens,generate_input_embeddings,extract_embeddings_for_global_tokens,convert_standard_properties_to_tokens
+import re
+def detect_token_lang(token: str) -> str:
+    """基于字符集合的简单词级语言检测。返回 'en' 或 'zh'。
+    - 含有中文字符则判为 'zh'
+    - 含有英文字母则判为 'en'
+    - 两者都有时优先中文（更适合中文句子里的中英混排）
+    - 都没有则回退为 'en'
+    """
+    if not token:
+        return 'en'
+    has_zh = re.search(r"[\u4e00-\u9fff]", token) is not None
+    has_en = re.search(r"[A-Za-z]", token) is not None
+    if has_zh and not has_en:
+        return 'zh'
+    if has_en and not has_zh:
+        return 'en'
+    if has_zh and has_en:
+        return 'zh'
+    return 'en'
 def sample_logits(logits, temperature=1.0, top_p=0.85, top_k=0,black_list_tokens=[]):
     if temperature == 0:
         temperature = 1.0
@@ -62,6 +85,13 @@ def sample_logits(logits, temperature=1.0, top_p=0.85, top_k=0,black_list_tokens
 @click.option("--audio_tokenizer_path", type=str, required=False,default="/home/yueyulin/models/Spark-TTS-0.5B/")
 @click.option("--output_path", type=str, required=False,default="generated_from_chatrwkv.wav")
 def main(model_path,text,age,gender,emotion,pitch,speed,device,audio_tokenizer_path,output_path):
+    lang = detect_token_lang(text)
+    print(f'lang: {lang} before normalization {text}')
+    if lang == 'zh':
+        text = chinese_normalizer.normalize(text)
+    else:
+        text = english_normalizer.normalize(text)
+    print(f'lang: {lang} after normalization {text}')
     print(f"age: {age}, gender: {gender}, emotion: {emotion}, pitch: {pitch}, speed: {speed}")
     TTS_TAG_0 = 8193
     TTS_TAG_1 = 8194
@@ -99,10 +129,11 @@ def main(model_path,text,age,gender,emotion,pitch,speed,device,audio_tokenizer_p
     print(f'generated global_tokens: {global_tokens}')
     global_tokens = [i + 8196 for i in global_tokens]
     print(f'global_tokens: {global_tokens}')
+    start_time = time.time()
     x,state = model.forward([TTS_TAG_1], state)
     semantic_tokens = []
     for i in range(2048):
-        sampled_id = sample_logits(x, temperature=1.0, top_p=0.95, top_k=50)
+        sampled_id = sample_logits(x, temperature=1.0, top_p=0.95, top_k=80)
         if sampled_id == 8192:
             break
         semantic_tokens.append(sampled_id)
@@ -114,8 +145,12 @@ def main(model_path,text,age,gender,emotion,pitch,speed,device,audio_tokenizer_p
     semantic_tokens = torch.tensor([semantic_tokens], dtype=torch.int32, device=device)
     import soundfile as sf
     wav_reconstructed = audio_tokenizer.detokenize(global_tokens, semantic_tokens)
+    end_time = time.time()
     print(f'wav_reconstructed shape: {wav_reconstructed.shape}')
     sf.write(output_path, wav_reconstructed, audio_tokenizer.config['sample_rate'])
     print(f'generated wav saved to {output_path}')
+    seconds = wav_reconstructed.shape[0] / audio_tokenizer.config['sample_rate']
+    print(f'generated wav duration: {seconds} seconds')
+    print(f'time: {end_time - start_time}s, RT: {(end_time - start_time)/seconds} ')
 if __name__ == "__main__":
     main()
