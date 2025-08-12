@@ -76,7 +76,7 @@ def ramdomly_mark_phonem(text, lang='en', min_mark=1, max_mark=None):
         if max_mark is None:
             max_mark = len(words)
         elif max_mark > len(words):
-            raise ValueError(f"max_mark ({max_mark}) 不能大于切分后单词总量 ({len(words)})")
+            max_mark = len(words)
         
         if min_mark > max_mark:
             raise ValueError(f"min_mark ({min_mark}) 不能大于 max_mark ({max_mark})")
@@ -109,7 +109,7 @@ def ramdomly_mark_phonem(text, lang='en', min_mark=1, max_mark=None):
         if max_mark is None:
             max_mark = len(words)
         elif max_mark > len(words):
-            raise ValueError(f"max_mark ({max_mark}) 不能大于切分后单词总量 ({len(words)})")
+            max_mark = len(words)
         
         if min_mark > max_mark:
             raise ValueError(f"min_mark ({min_mark}) 不能大于 max_mark ({max_mark})")
