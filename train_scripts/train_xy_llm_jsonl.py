@@ -1,6 +1,6 @@
 import multiprocessing as mp
 mp.set_start_method('spawn', force=True)
-
+from datasets import load_dataset
 import os
 import torch
 from torch.utils.data import DataLoader, DistributedSampler, Dataset, ConcatDataset
@@ -209,8 +209,7 @@ def main():
     
     logger.info(f"Found {len(jsonl_files)} JSONL files.")
     
-    datasets = [JsonlDataset(file_path=f) for f in jsonl_files]
-    dataset = ConcatDataset(datasets)
+    dataset = load_dataset("json", data_files=jsonl_files, split="train")
 
     sampler = DistributedSampler(dataset, num_replicas=world_size, rank=local_rank, shuffle=True)
     
@@ -263,9 +262,14 @@ def main():
 
                 if args.max_tokens_per_round:
                     B, T, C = batch['input_ids'].shape
-                    if B * T > args.max_tokens_per_round * 1024:
-                        logger.warning(f"Batch token size ({B*T}) > max. Skipping batch.")
-                        continue
+                    max_tokens = args.max_tokens_per_round * 1024
+                    if B * T > max_tokens:
+                        max_batch_size = max_tokens // T
+                        batch['input_ids'] = batch['input_ids'][:max_batch_size]
+                        batch['labels'] = batch['labels'][:max_batch_size]
+                        batch['attention_mask'] = batch['attention_mask'][:max_batch_size]
+                        logger.warning(f"Batch token size ({B*T}) > max. Cut to {max_batch_size*T} tokens. from {B} to {max_batch_size}")
+                        
 
                 update_learning_rate(optimizer, global_step, total_steps, args.warmup_steps, args.learning_rate, args.learning_rate_final, args, is_main_process)
 

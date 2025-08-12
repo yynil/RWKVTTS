@@ -7,13 +7,14 @@ from pathlib import Path
 # 程序需要的字段
 REQUIRED_FIELDS = {
     'text',
-    'global_tokens', 
-    'semantic_tokens',
+    'audio_tokens', 
     'age',
     'gender', 
     'emotion',
     'pitch',
-    'speed'
+    'speed',
+    'speech_duration'
+    
 }
 
 def filter_jsonl_file(input_file, output_file):
@@ -88,8 +89,8 @@ def process_directory(input_dir, output_dir):
         filter_jsonl_file(str(jsonl_file), str(output_file))
 
 def main():
-    input_dir = "/home/yueyulin/data/voxbox_wids_tokens_with_properties"
-    output_dir = "/home/yueyulin/data/voxbox_wids_tokens_filtered"
+    input_dir = "/external_data/higgs_tokens/higgs_tokens_with_properties/"
+    output_dir = "/external_data/higgs_tokens/higgs_tokens_with_properties_filtered"
     
     print("开始过滤jsonl文件，只保留程序需要的字段...")
     print(f"需要的字段: {REQUIRED_FIELDS}")

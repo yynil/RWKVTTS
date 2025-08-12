@@ -77,10 +77,9 @@ def worker_process(process_id: int, input_queue: mp.Queue, init_done_queue: mp.Q
                     vq = audio_tokenizer.encode(audio_data,sampling_rate)
                 speech_tokens = vq.detach().cpu().tolist()
                 result = {
-                    'language': json_data.get('language', 'zh'),
-                    'text': json_data['text'],
                     'audio_tokens': speech_tokens
                 }
+                result.update(json_data)
                 
                 # 写入JSONL文件
                 f.write(json.dumps(result, ensure_ascii=False) + '\n')
