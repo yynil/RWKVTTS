@@ -99,7 +99,7 @@ def main(model_path,text,age,gender,emotion,pitch,speed,device,audio_tokenizer_p
     tokenizer = AutoTokenizer.from_pretrained(model_path,trust_remote_code=True)
     audio_tokenizer = BiCodecTokenizer(model_dir=audio_tokenizer_path, device=device)
     black_list_tokens = [id for id in range(4096,8193)]
-    model = RWKV(model=f"{model_path}/model_converted",  strategy='cuda:0 bf16')
+    model = RWKV(model=f"{model_path}/model_converted",  strategy='cuda:0 fp32')
     print(model)
     properties_tokens = convert_standard_properties_to_tokens(age, gender, emotion, pitch, speed)
     print(f'properties_tokens: {properties_tokens}')
