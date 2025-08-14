@@ -8,6 +8,69 @@ import threading
 # 懒加载的 jieba 分词器（进程内单例，线程安全初始化）
 _jieba_tokenizer = None
 _jieba_lock = threading.Lock()
+from pypinyin import pinyin, Style
+from collections import defaultdict
+import random
+import warnings
+
+# 全局缓存
+_pinyin_to_chars_cache = None  # {TONE3拼音: [同音字]}
+_all_chinese_chars = None      # 所有有效汉字列表
+_word_list = None
+def build_pinyin_dict():
+    """预加载所有汉字拼音映射，构建倒排索引和汉字列表"""
+    global _pinyin_to_chars_cache, _all_chinese_chars
+    
+    if _pinyin_to_chars_cache is not None:
+        return _pinyin_to_chars_cache
+    
+    _pinyin_to_chars_cache = defaultdict(list)
+    _all_chinese_chars = []
+    
+    for code in range(0x4E00, 0x9FA5 + 1):  # 基本汉字Unicode范围
+        char = chr(code)
+        try:
+            # 获取所有可能的读音（多音字处理）
+            pinyin_lists = pinyin(char, style=Style.TONE3, heteronym=True)
+            for py_list in pinyin_lists:
+                for py in py_list:
+                    _pinyin_to_chars_cache[py].append(char)
+            _all_chinese_chars.append(char)
+        except:
+            continue
+    
+    return _pinyin_to_chars_cache
+
+def get_random_chinese_char():
+    """随机返回一个有效汉字（基于pypinyin能处理的字符）"""
+    if _all_chinese_chars is None:
+        build_pinyin_dict()
+    return random.choice(_all_chinese_chars)
+
+def get_chars_by_tone3(pinyin_str, strict=True):
+    """根据TONE3拼音返回同音字列表"""
+    if _pinyin_to_chars_cache is None:
+        build_pinyin_dict()
+    if strict:
+        return _pinyin_to_chars_cache.get(pinyin_str, [])
+    else:
+        base_py = pinyin_str.rstrip('12345')
+        return [char for py, chars in _pinyin_to_chars_cache.items() 
+                if py.startswith(base_py) for char in chars]
+def get_random_eng_world():
+    global _word_list
+    if _word_list is None:
+        from spellchecker import SpellChecker
+        spell = SpellChecker()
+        _word_list = list(spell.word_frequency.dictionary.keys())
+    return random.choice(_word_list)
+def get_random_char_by_tone3(pinyin_str, strict=True):
+    """随机返回一个同音字"""
+    chars = get_chars_by_tone3(pinyin_str, strict)
+    if not chars:
+        warnings.warn(f"未找到拼音为 {pinyin_str} 的汉字")
+        return get_random_chinese_char()  # 失败时回退到随机汉字
+    return random.choice(chars)
 
 def get_jieba_tokenizer():
     global _jieba_tokenizer
@@ -40,8 +103,6 @@ def convert_to_ipa_str(text: str, lang: str) -> str:
     """调用 convert_to_ipa 并统一返回字符串，同时对异常进行兜底。"""
     try:
         result = convert_to_ipa(text, lang)
-        if isinstance(result, list):
-            return ''.join(result)
         return result
     except Exception:
         # 任何异常时，返回原词，避免流程中断
@@ -50,11 +111,11 @@ def convert_to_ipa(text,lang='en'):
     if lang == 'en':
         return ipa.convert(text)
     elif lang == 'zh':
-        return lazy_pinyin(text, style=Style.TONE3)
+        return lazy_pinyin(text, style=Style.TONE3, neutral_tone_with_five=True)
     else:
         raise ValueError(f"Unsupported language: {lang}")
 
-def ramdomly_mark_phonem(text, lang='en', min_mark=1, max_mark=None):
+def ramdomly_mark_phonem(text, lang='en', min_mark=1, max_mark=None,wrong_word_ratio=0.5):
     """
     随机标记音标函数
     :param text: 输入文本
@@ -92,7 +153,27 @@ def ramdomly_mark_phonem(text, lang='en', min_mark=1, max_mark=None):
             selected_word = words[index]
             token_lang = detect_token_lang(selected_word)
             ipa_result = convert_to_ipa_str(selected_word, token_lang)
-            words[index] = f"SPCT_48{selected_word}SPCT_49{ipa_result}SPCT_50"
+            if token_lang == 'zh':
+                #split word to characters
+                zh_chars = list(selected_word)
+                #ipa_result is already a list
+                if len(ipa_result) != len(zh_chars):
+                    words[index] = selected_word # For cases where the word is not split correctly
+                else:
+                    marked_word = ''
+                    for i in range(len(zh_chars)):
+                        if random.random() < wrong_word_ratio:
+                            wrong_char = get_random_chinese_char()
+                            marked_word += f"SPCT_48{wrong_char}SPCT_49{ipa_result[i]}SPCT_50"
+                        else:
+                            marked_word += f"SPCT_48{zh_chars[i]}SPCT_49{ipa_result[i]}SPCT_50"
+                    words[index] = marked_word
+            else:
+                if random.random() < wrong_word_ratio:
+                    wrong_word = get_random_eng_world()
+                    words[index] = f"SPCT_48{wrong_word}SPCT_49{ipa_result}SPCT_50"
+                else:
+                    words[index] = f"SPCT_48{selected_word}SPCT_49{ipa_result}SPCT_50"
         
         return ' '.join(words)
     
@@ -125,7 +206,27 @@ def ramdomly_mark_phonem(text, lang='en', min_mark=1, max_mark=None):
             selected_word = words[index]
             token_lang = detect_token_lang(selected_word)
             ipa_result = convert_to_ipa_str(selected_word, token_lang)
-            words[index] = f"SPCT_48{selected_word}SPCT_49{ipa_result}SPCT_50"
+            if token_lang == 'zh':
+                #split word to characters
+                zh_chars = list(selected_word)
+                #ipa_result is already a list
+                if len(ipa_result) != len(zh_chars):
+                    words[index] = selected_word # For cases where the word is not split correctly
+                else:
+                    marked_word = ''
+                    for i in range(len(zh_chars)):
+                        if random.random() < wrong_word_ratio:
+                            wrong_char = get_random_chinese_char()
+                            marked_word += f"SPCT_48{wrong_char}SPCT_49{ipa_result[i]}SPCT_50"
+                        else:
+                            marked_word += f"SPCT_48{zh_chars[i]}SPCT_49{ipa_result[i]}SPCT_50"
+                    words[index] = marked_word
+            else:
+                if random.random() < wrong_word_ratio:
+                    wrong_word = get_random_eng_world()
+                    words[index] = f"SPCT_48{wrong_word}SPCT_49{ipa_result}SPCT_50"
+                else:
+                    words[index] = f"SPCT_48{selected_word}SPCT_49{ipa_result}SPCT_50"
         
         return ''.join(words)
     
@@ -166,3 +267,6 @@ if __name__ == '__main__':
     print("英文标记结果:", marked_eng_str)
     print("英文tokenize结果:", rwkv_tokenizer.encode(marked_eng_str))
     print('--------------------------------')
+
+    str = "叶公好龙"
+    print(ramdomly_mark_phonem(str, 'zh', min_mark=1, max_mark=1))

@@ -42,6 +42,7 @@ def extract_embeddings_for_global_tokens(model, tokenizer, text, age: str, gende
     text_tokens = tokenizer.encode(text, add_special_tokens=False)
     properties_tokens = tokenizer.encode(properties_tokens, add_special_tokens=False)
     print(f'properties_tokens: {properties_tokens}')
+    print(f'text_tokens: {text_tokens}')
     text_tokens_tensor = torch.tensor(text_tokens, dtype=torch.long, device=device)
     properties_tokens_tensor = torch.tensor(properties_tokens, dtype=torch.long, device=device)
     text_embs = model.text_embedder(text_tokens_tensor)

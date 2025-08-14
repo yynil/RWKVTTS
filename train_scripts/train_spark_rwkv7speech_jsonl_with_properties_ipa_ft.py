@@ -520,6 +520,8 @@ def main():
                 args,
                 is_main_process
             )
+            if batch_idx == 0:
+                print(f'rank {local_rank} batch: {batch}')
             if args.use_cu_seqlens:
                 processed_batch = create_inputs_and_labels_with_properties_culens(batch, tokenizer, model_engine, eos_token_id, device)
             else:
