@@ -5,6 +5,8 @@ import os
 import pygame
 import soundfile as sf
 import numpy as np
+import subprocess
+import platform
 
 # 设置主题
 ctk.set_appearance_mode("dark")
@@ -487,6 +489,9 @@ class TTSGUI(ctk.CTk):
         self.geometry("900x1000")
         self.resizable(True, True)
         
+        # 设置应用图标
+        self.set_app_icon()
+        
         # 创建界面
         self.create_widgets()
         
@@ -495,6 +500,66 @@ class TTSGUI(ctk.CTk):
         
         # 绑定文本变化事件
         self.text_input.bind("<KeyRelease>", self.on_text_change)
+        
+    def set_app_icon(self):
+        """设置应用图标"""
+        try:
+            # 尝试设置应用图标
+            icon_path = os.path.join(os.path.dirname(__file__), "tts_icon.png")
+            if os.path.exists(icon_path):
+                # 在macOS上设置图标
+                if platform.system() == "Darwin":
+                    try:
+                        # 使用PhotoImage来设置图标
+                        import tkinter as tk
+                        icon_image = tk.PhotoImage(file=icon_path)
+                        self.iconphoto(True, icon_image)
+                        print(f"✅ 应用图标设置成功: {icon_path}")
+                    except Exception as e:
+                        print(f"设置图标失败: {e}")
+                else:
+                    # 在其他平台上尝试设置图标
+                    try:
+                        self.iconbitmap(icon_path)
+                        print(f"✅ 应用图标设置成功: {icon_path}")
+                    except Exception as e:
+                        print(f"设置图标失败: {e}")
+            else:
+                print(f"⚠️ 图标文件不存在: {icon_path}")
+        except Exception as e:
+            print(f"设置图标失败: {e}")
+            
+    def open_audio_folder(self):
+        """打开音频文件夹并选中生成的音频文件"""
+        try:
+            output_path = self.output_path.get()
+            if not output_path:
+                self.show_error("请先生成音频文件")
+                return
+                
+            # 获取文件夹路径和文件名
+            folder_path = os.path.dirname(os.path.abspath(output_path))
+            file_name = os.path.basename(output_path)
+            
+            if not os.path.exists(folder_path):
+                self.show_error(f"文件夹不存在: {folder_path}")
+                return
+                
+            # 根据操作系统使用不同的命令打开文件夹
+            if platform.system() == "Darwin":  # macOS
+                # 使用open命令打开文件夹并选中文件
+                subprocess.run(["open", "-R", output_path])
+            elif platform.system() == "Windows":
+                # Windows使用explorer命令
+                subprocess.run(["explorer", "/select,", output_path])
+            else:  # Linux
+                # 使用xdg-open命令
+                subprocess.run(["xdg-open", folder_path])
+                
+            self.show_success(f"已打开文件夹: {folder_path}")
+            
+        except Exception as e:
+            self.show_error(f"打开文件夹失败: {str(e)}")
         
     def create_widgets(self):
         # 主标题
@@ -679,15 +744,29 @@ class TTSGUI(ctk.CTk):
         output_browse_btn = ctk.CTkButton(output_frame, text="浏览", command=self.browse_output)
         output_browse_btn.pack(side="right", padx=5)
         
+        # 按钮框架
+        button_frame = ctk.CTkFrame(gen_frame)
+        button_frame.pack(fill="x", padx=10, pady=5)
+        
         self.generate_btn = ctk.CTkButton(
-            gen_frame, 
+            button_frame, 
             text="🚀 开始生成", 
             command=self.start_generation,
             height=40,
             font=ctk.CTkFont(size=16, weight="bold"),
             state="disabled"  # 初始状态为禁用
         )
-        self.generate_btn.pack(pady=10)
+        self.generate_btn.pack(side="left", padx=5, fill="x", expand=True)
+        
+        # 打开文件夹按钮
+        self.open_folder_btn = ctk.CTkButton(
+            button_frame,
+            text="📁 打开文件夹",
+            command=self.open_audio_folder,
+            height=40,
+            font=ctk.CTkFont(size=14)
+        )
+        self.open_folder_btn.pack(side="right", padx=5)
         
     def create_progress_frame(self, parent):
         progress_frame = ctk.CTkFrame(parent)
@@ -1054,8 +1133,22 @@ class TTSGUI(ctk.CTk):
             self.total_time_label.configure(text=self.format_time(self.audio_player.audio_length))
             # 重置进度条
             self.audio_progress.set(0)
+            
+            # 自动开始播放
+            self.after(1000, self.auto_play_audio)  # 延迟1秒后自动播放
         else:
             self.show_error("音频文件加载失败")
+            
+    def auto_play_audio(self):
+        """自动播放音频"""
+        try:
+            if self.audio_player.current_audio:
+                self.audio_player.play()
+                self.play_btn.configure(text="⏸️ 暂停")
+                self.play_status_label.configure(text="状态: 自动播放中")
+                self.show_success("音频已自动开始播放")
+        except Exception as e:
+            print(f"自动播放失败: {e}")
              
     def generation_failed(self):
         """生成失败处理"""
