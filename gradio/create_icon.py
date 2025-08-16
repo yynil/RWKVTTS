@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw, ImageFont
 import os
 
 def create_icon():
-    """创建一个包含RWKVTTS文字的图标"""
+    """创建一个包含RWKVTTS文字和话筒的图标"""
     # 创建一个128x128的图像
     size = 128
     image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
@@ -53,24 +53,49 @@ def create_icon():
     # 绘制主文字
     draw.text((x, y), text, fill=text_color, font=font)
     
-    # 在底部添加一个小音符符号
-    note_color = (255, 255, 255, 180)  # 半透明白色
+    # 在底部添加一个话筒符号
+    mic_color = (255, 255, 255, 180)  # 半透明白色
     
-    # 音符位置（底部中央）
-    note_x = size // 2 - 15
-    note_y = size - 35
+    # 话筒位置（底部中央）
+    mic_x = size // 2 - 15
+    mic_y = size - 40
     
-    # 绘制音符的圆点
-    draw.ellipse([note_x + 5, note_y, note_x + 13, note_y + 8], fill=note_color)
+    # 绘制话筒的头部（圆形）
+    mic_head_radius = 12
+    mic_head_x = mic_x + 15
+    mic_head_y = mic_y + 8
+    draw.ellipse([mic_head_x - mic_head_radius, mic_head_y - mic_head_radius, 
+                   mic_head_x + mic_head_radius, mic_head_y + mic_head_radius], 
+                  fill=mic_color)
     
-    # 绘制音符的竖线
-    draw.rectangle([note_x + 7, note_y + 8, note_x + 11, note_y + 25], fill=note_color)
+    # 绘制话筒的颈部（矩形）
+    mic_neck_width = 8
+    mic_neck_height = 20
+    mic_neck_x = mic_x + 15 - mic_neck_width // 2
+    mic_neck_y = mic_y + 8 + mic_head_radius
+    draw.rectangle([mic_neck_x, mic_neck_y, 
+                    mic_neck_x + mic_neck_width, mic_neck_y + mic_neck_height], 
+                   fill=mic_color)
     
-    # 绘制音符的横线
-    draw.rectangle([note_x + 11, note_y, note_x + 25, note_y + 4], fill=note_color)
+    # 绘制话筒的底座（椭圆形）
+    mic_base_width = 20
+    mic_base_height = 8
+    mic_base_x = mic_x + 15 - mic_base_width // 2
+    mic_base_y = mic_y + 8 + mic_head_radius + mic_neck_height
+    draw.ellipse([mic_base_x, mic_base_y, 
+                  mic_base_x + mic_base_width, mic_base_y + mic_base_height], 
+                 fill=mic_color)
     
-    # 绘制音符的小尾巴
-    draw.ellipse([note_x + 23, note_y - 5, note_x + 29, note_y + 1], fill=note_color)
+    # 绘制话筒头部的网格纹理（小圆点）
+    grid_color = (52, 152, 219, 100)  # 半透明蓝色
+    for i in range(-2, 3):
+        for j in range(-2, 3):
+            if i*i + j*j <= 4:  # 圆形网格
+                dot_x = mic_head_x + i * 3
+                dot_y = mic_head_y + j * 3
+                if (dot_x - mic_head_x)**2 + (dot_y - mic_head_y)**2 <= mic_head_radius**2:
+                    draw.ellipse([dot_x - 1, dot_y - 1, dot_x + 1, dot_y + 1], 
+                               fill=grid_color)
     
     # 保存图标
     icon_path = "tts_icon.png"
