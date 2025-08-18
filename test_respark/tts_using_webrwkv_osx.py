@@ -181,7 +181,9 @@ class TTSGenerator:
         # 缓存ONNX session
         print('🎿 开始加载ONNX模型')
         try:
-            self.ort_session = ort.InferenceSession(decoder_path)
+            self.ort_session = ort.InferenceSession(decoder_path, 
+                                                providers=['CUDAExecutionProvider','CPUExecutionProvider'])
+            print(f"🖥️ONNX Session for generate wavform actual providers: {self.ort_session.get_providers()}")
             print('✅ ONNX模型加载成功')
         except Exception as e:
             print(f'❌ ONNX模型加载失败: {e}')
