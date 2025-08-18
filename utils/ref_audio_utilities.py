@@ -24,6 +24,7 @@ class RefAudioUtilities:
         """
         self.ort_session = ort.InferenceSession(onnx_model_path, 
                                                 providers=['CUDAExecutionProvider','CPUExecutionProvider'])
+        print(f"🖥️ONNX Session actual providers: {self.ort_session.get_providers()}")
         self.sample_rate = 16000
         self.ref_segment_duration = ref_segment_duration
         self.latent_hop_length = latent_hop_length
@@ -38,7 +39,7 @@ class RefAudioUtilities:
         # 初始化wav2vec2模型
         self.wav2vec2_session = ort.InferenceSession(wav2vec2_path, 
                                                 providers=['CUDAExecutionProvider','CPUExecutionProvider'])
-    
+        print(f"🖥️Wav2Vec2 Session actual providers: {self.wav2vec2_session.get_providers()}")
     def load_audio(self, audio_path: Union[str, Path], target_sr: int = 16000, 
                    volume_normalize: bool = False) -> np.ndarray:
         """

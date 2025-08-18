@@ -1,6 +1,5 @@
 import click
 from webrwkv_py import Model, ThreadRuntime, get_available_adapters_py
-from sparktts.models.audio_tokenizer import BiCodecTokenizer
 from transformers import AutoTokenizer
 import torch
 from torch.nn import functional as F
