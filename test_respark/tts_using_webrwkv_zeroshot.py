@@ -10,6 +10,8 @@ import os
 import numpy as np
 import onnxruntime as ort
 from pathlib import Path
+
+from utils.ref_audio_utilities import RefAudioUtilities
 try:
     import questionary
     HAS_QUESTIONARY = True
@@ -84,7 +86,7 @@ def sample_logits(logits, temperature=1.0, top_p=0.85, top_k=0):
 @click.option("--prompt_text",type=str,required=False,default="希望你以后能够做的，比我还好呦！")
 @click.option("--device", type=str, required=False,default='cpu')
 @click.option("--output_path", type=str, required=False,default="generated_from_webrwkv_zeroshot.wav")
-@click.option("--using_prompt_text",type=bool,required=False,default=False)
+@click.option("--using_prompt_text",type=bool,required=True,default=True)
 @click.option("--spark_bicodec_path",type=str,required=False,default=None)
 def main(model_path,text,prompt_audio,prompt_text,device,output_path,using_prompt_text,spark_bicodec_path):
     webrwkv_model_path = os.path.join(model_path, 'webrwkv.safetensors')
@@ -138,7 +140,7 @@ def main(model_path,text,prompt_audio,prompt_text,device,output_path,using_promp
         from utils.ref_audio_utilities_improved import RefAudioUtilitiesImproved 
         audio_tokenizer_path = os.path.join(model_path, 'BiCodecTokenize.onnx')
         wav2vec2_path = os.path.join(model_path, 'wav2vec2-large-xlsr-53.onnx')
-        ref_audio_utilities = RefAudioUtilitiesImproved(audio_tokenizer_path, wav2vec2_path)
+        ref_audio_utilities = RefAudioUtilities(audio_tokenizer_path, wav2vec2_path)
         global_tokens, prompt_semantic_tokens = ref_audio_utilities.tokenize(Path(prompt_audio))
         print(f'global_tokens: {global_tokens}')
         print(f'semantic_tokens: {prompt_semantic_tokens}')

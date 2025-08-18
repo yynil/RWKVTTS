@@ -224,16 +224,15 @@ class TTSGenerator:
         
         # 获取参数
         text = params['text']
-        need_normalization = params.get('need_normalization', False)
         
         # 检查是否为 zero shot 模式
         if params.get('zero_shot', False):
             # Zero shot 模式
             ref_audio_path = params['ref_audio_path']
-            prompt_text = params.get('prompt_text', "希望你以后能够做的，能比我还好呦！")
+            prompt_text = params.get('prompt_text', "希望你以后能够做的，比我还好呦！")
             
             print(f"🎯 开始生成音频 (Zero Shot 模式): {text}")
-            print(f"📊 参数: 参考音频={ref_audio_path}, 提示文本={prompt_text}, 归一化={need_normalization}")
+            print(f"📊 参数: 参考音频={ref_audio_path}, 提示文本={prompt_text}")
             
             # 检测语言
             lang = detect_token_lang(text)
@@ -250,7 +249,7 @@ class TTSGenerator:
             speed = params['speed']
             
             print(f"🎯 开始生成音频: {text}")
-            print(f"📊 参数: 年龄={age}, 性别={gender}, 情感={emotion}, 音高={pitch}, 速度={speed}, 归一化={need_normalization}")
+            print(f"📊 参数: 年龄={age}, 性别={gender}, 情感={emotion}, 音高={pitch}, 速度={speed}")
             
             # 检测语言
             lang = detect_token_lang(text)
@@ -273,20 +272,11 @@ class TTSGenerator:
         
         # 使用ONNX解码器生成音频
         print("🎵 开始ONNX解码器推理...")
-        try:
-            # 尝试使用双输入格式
-            outputs = self.ort_session.run(None, {
+        outputs = self.ort_session.run(None, {
                 "global_tokens": global_tokens_array, 
                 "semantic_tokens": semantic_tokens_array
             })
-            wav_data = outputs[0].reshape(-1)
-        except Exception as e:
-            print(f"⚠️ 双输入格式失败，尝试单输入格式: {e}")
-            # 回退到单输入格式
-            input_name = self.ort_session.get_inputs()[0].name
-            output_name = self.ort_session.get_outputs()[0].name
-            wav_data = self.ort_session.run([output_name], {input_name: semantic_tokens_array})[0]
-        
+        wav_data = outputs[0].reshape(-1)
         decode_time = time.time() - decode_start
         
         # 计算音频时长和RTF
@@ -573,14 +563,7 @@ def interactive_parameter_selection(generator: TTSGenerator):
                 if prompt_text is None:
                     break
                 
-                # 归一化选择
-                need_normalization = questionary.confirm(
-                    "🔄 是否需要归一化?",
-                    default=False
-                ).ask()
-                
-                if need_normalization is None:
-                    break
+    
                 
                 # 确认生成
                 confirm = questionary.confirm(
@@ -588,7 +571,6 @@ def interactive_parameter_selection(generator: TTSGenerator):
                     f"文本: {text}\n"
                     f"参考音频: {ref_audio_path}\n"
                     f"提示文本: {prompt_text}\n"
-                    f"归一化: {need_normalization}\n"
                     f"输出目录: {output_dir}",
                     default=True
                 ).ask()
@@ -600,7 +582,6 @@ def interactive_parameter_selection(generator: TTSGenerator):
                         'zero_shot': True,
                         'ref_audio_path': ref_audio_path,
                         'prompt_text': prompt_text,
-                        'need_normalization': need_normalization,
                         'output_dir': output_dir
                     }
                     
@@ -676,20 +657,12 @@ def interactive_parameter_selection(generator: TTSGenerator):
                 if speed is None:
                     break
                 
-                # 归一化选择
-                need_normalization = questionary.confirm(
-                    "🔄 是否需要归一化?",
-                    default=False
-                ).ask()
-                
-                if need_normalization is None:
-                    break
-                
+             
                 # 确认生成
                 confirm = questionary.confirm(
                     f"🚀 确认生成音频?\n"
                     f"文本: {text}\n"
-                    f"参数: 年龄={age}, 性别={gender}, 情感={emotion}, 音高={pitch}, 速度={speed}, 归一化={need_normalization}\n"
+                    f"参数: 年龄={age}, 性别={gender}, 情感={emotion}, 音高={pitch}, 速度={speed}\n"
                     f"输出目录: {output_dir}",
                     default=True
                 ).ask()
@@ -704,7 +677,6 @@ def interactive_parameter_selection(generator: TTSGenerator):
                         'emotion': emotion,
                         'pitch': pitch,
                         'speed': speed,
-                        'need_normalization': need_normalization,
                         'output_dir': output_dir
                     }
                     

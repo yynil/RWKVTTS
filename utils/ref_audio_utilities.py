@@ -11,7 +11,7 @@ import soundfile as sf
 class RefAudioUtilities:
     """音频处理工具类，使用ONNX模型生成tokens"""
     
-    def __init__(self, onnx_model_path: str, wav2vec2_path: str = None, 
+    def __init__(self, onnx_model_path: str, wav2vec2_path, 
                  ref_segment_duration: float = 6.0, latent_hop_length: int = 320):
         """
         初始化ONNX模型
@@ -22,7 +22,8 @@ class RefAudioUtilities:
             ref_segment_duration: 参考音频时长（秒）
             latent_hop_length: 潜在特征跳长度
         """
-        self.ort_session = ort.InferenceSession(onnx_model_path)
+        self.ort_session = ort.InferenceSession(onnx_model_path, 
+                                                providers=['CUDAExecutionProvider','CPUExecutionProvider'])
         self.sample_rate = 16000
         self.ref_segment_duration = ref_segment_duration
         self.latent_hop_length = latent_hop_length
@@ -35,14 +36,8 @@ class RefAudioUtilities:
         print(f"模型输出: {self.output_names}")
         
         # 初始化wav2vec2模型
-        self.wav2vec2_session = None
-        if wav2vec2_path:
-            try:
-                self.wav2vec2_session = ort.InferenceSession(wav2vec2_path)
-                print("wav2vec2 ONNX模型加载成功")
-            except Exception as e:
-                print(f"wav2vec2 ONNX模型加载失败: {e}")
-                self.wav2vec2_session = None
+        self.wav2vec2_session = ort.InferenceSession(wav2vec2_path, 
+                                                providers=['CUDAExecutionProvider','CPUExecutionProvider'])
     
     def load_audio(self, audio_path: Union[str, Path], target_sr: int = 16000, 
                    volume_normalize: bool = False) -> np.ndarray:
@@ -76,15 +71,42 @@ class RefAudioUtilities:
         
         return audio
     
-    def _audio_volume_normalize(self, audio: np.ndarray) -> np.ndarray:
+    def _audio_volume_normalize(self, audio: np.ndarray, coeff: float = 0.2) -> np.ndarray:
         """音频音量归一化"""
-        if np.abs(audio).max() > 0:
-            audio = audio / np.abs(audio).max()
+        # Sort the absolute values of the audio signal
+        temp = np.sort(np.abs(audio))
+
+        # If the maximum value is less than 0.1, scale the array to have a maximum of 0.1
+        if temp[-1] < 0.1:
+            scaling_factor = max(
+                temp[-1], 1e-3
+            )  # Prevent division by zero with a small constant
+            audio = audio / scaling_factor * 0.1
+
+        # Filter out values less than 0.01 from temp
+        temp = temp[temp > 0.01]
+        L = temp.shape[0]  # Length of the filtered array
+
+        # If there are fewer than or equal to 10 significant values, return the audio without further processing
+        if L <= 10:
+            return audio
+
+        # Compute the average of the top 10% to 1% of values in temp
+        volume = np.mean(temp[int(0.9 * L) : int(0.99 * L)])
+
+        # Normalize the audio to the target coefficient level, clamping the scale factor between 0.1 and 10
+        audio = audio * np.clip(coeff / volume, a_min=0.1, a_max=10)
+
+        # Ensure the maximum absolute value in the audio does not exceed 1
+        max_value = np.max(np.abs(audio))
+        if max_value > 1:
+            audio = audio / max_value
+
         return audio
     
     def extract_mel_spectrogram(self, wav: np.ndarray, n_mels: int = 128, 
-                               n_fft: int = 1024, hop_length: int = 256, 
-                               win_length: int = 1024) -> np.ndarray:
+                               n_fft: int = 1024, hop_length: int = 320, 
+                               win_length: int = 640) -> np.ndarray:
         """
         提取梅尔频谱图
         
@@ -106,16 +128,11 @@ class RefAudioUtilities:
             hop_length=hop_length,
             win_length=win_length,
             power=1,
-            norm="slaney"
+            norm="slaney",
+            fmin=10,
         )
         
-        # 转换为dB单位
-        mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
-        
-        # 归一化到[0, 1]范围
-        mel_spec_norm = (mel_spec_db - mel_spec_db.min()) / (mel_spec_db.max() - mel_spec_db.min())
-        
-        return mel_spec_norm
+        return mel_spec
     
     def extract_wav2vec2_features(self, wav: np.ndarray) -> np.ndarray:
         """
@@ -131,71 +148,23 @@ class RefAudioUtilities:
         if self.wav2vec2_session is None:
             raise RuntimeError("wav2vec2模型未加载，请在初始化时提供wav2vec2_path参数")
         
-        try:
-            # 准备输入：确保音频是float32类型，范围在[-1, 1]之间
-            if wav.dtype != np.float32:
-                wav = wav.astype(np.float32)
-            
-            # 如果音频值不在[-1, 1]范围内，进行归一化
-            if np.abs(wav).max() > 1.0:
-                wav = wav / np.abs(wav).max()
-            
-            # 添加batch维度
-            input_data = wav[np.newaxis, :]  # [1, sequence_length]
-            
-            # 运行wav2vec2推理
-            # 注意：这个ONNX模型已经包含了特征提取器的预处理和多个隐藏层的组合
-            inputs = {'input_values': input_data}
-            outputs = self.wav2vec2_session.run(None, inputs)
-            
-            # 输出形状应该是 [1, time_steps, 1024]
-            # 这个输出已经是通过选择隐藏层11, 14, 16并计算平均值得到的
-            features = outputs[0][0]  # 移除batch维度，得到 [time_steps, 1024]
-            
-            return features.astype(np.float32)
-            
-        except Exception as e:
-            print(f"wav2vec2推理失败: {e}")
-            print("回退到MFCC特征提取")
-            return self._extract_mfcc_features(wav)
-    
-    def _extract_mfcc_features(self, wav: np.ndarray) -> np.ndarray:
-        """
-        回退方法：使用MFCC特征作为替代
+        # 添加batch维度
+        input_data = wav[np.newaxis, :].astype(np.float32)  # [1, sequence_length]
         
-        Args:
-            wav: 音频数据
-            
-        Returns:
-            特征向量
-        """
-        # 提取MFCC特征
-        mfcc = librosa.feature.mfcc(
-            y=wav, 
-            sr=self.sample_rate, 
-            n_mfcc=13,
-            hop_length=320,  # 对应wav2vec2的步长
-            n_fft=1024
-        )
+        # 运行wav2vec2推理
+        # 注意：这个ONNX模型已经包含了特征提取器的预处理和多个隐藏层的组合
+        inputs = {'input': input_data}
+        outputs = self.wav2vec2_session.run(None, inputs)
         
-        # 提取delta和delta-delta特征
-        mfcc_delta = librosa.feature.delta(mfcc)
-        mfcc_delta2 = librosa.feature.delta(mfcc, order=2)
-        
-        # 组合特征
-        features = np.concatenate([mfcc, mfcc_delta, mfcc_delta2], axis=0)
-        
-        # 转置并填充到1024维（模拟wav2vec2特征）
-        features = features.T  # (time, features)
-        
-        # 如果特征维度不足1024，用零填充
-        if features.shape[1] < 1024:
-            padding = np.zeros((features.shape[0], 1024 - features.shape[1]))
-            features = np.concatenate([features, padding], axis=1)
-        else:
-            features = features[:, :1024]
+        # 输出形状应该是 [1, time_steps, 1024]
+        # 这个输出已经是通过选择隐藏层11, 14, 16并计算平均值得到的
+        print(f'outputs: {outputs}')
+        print(f'outputs: {outputs[0].shape}')
+        features = outputs[0][0]  # 移除batch维度，得到 [time_steps, 1024]
         
         return features.astype(np.float32)
+            
+    
     
     def get_ref_clip(self, wav: np.ndarray) -> np.ndarray:
         """
@@ -256,36 +225,7 @@ class RefAudioUtilities:
         feat = self.extract_wav2vec2_features(wav)
         ref_mel = self.extract_mel_spectrogram(ref_wav)
         
-        # 准备ONNX模型输入
-        # 注意：根据ONNX模型信息，输入需要特定的形状
-        # ref_wav_mel: [1, 128, 301]
-        # feat: [1, feat_len, 1024]
-        
-        # 调整ref_mel形状
-        if ref_mel.shape[1] < 301:
-            # 如果时间维度不足301，用最后一帧重复填充
-            padding = np.tile(ref_mel[:, -1:], (1, 301 - ref_mel.shape[1]))
-            ref_mel = np.concatenate([ref_mel, padding], axis=1)
-        else:
-            ref_mel = ref_mel[:, :301]
-        
-        # 确保mel特征是128维
-        if ref_mel.shape[0] != 128:
-            if ref_mel.shape[0] < 128:
-                # 如果mel维度不足128，用零填充
-                padding = np.zeros((128 - ref_mel.shape[0], ref_mel.shape[1]))
-                ref_mel = np.concatenate([ref_mel, padding], axis=0)
-            else:
-                ref_mel = ref_mel[:128, :]
-        
-        # 调整feat形状
-        if feat.shape[1] < 1024:
-            # 如果特征维度不足1024，用零填充
-            padding = np.zeros((feat.shape[0], 1024 - feat.shape[1]))
-            feat = np.concatenate([feat, padding], axis=1)
-        else:
-            feat = feat[:, :1024]
-        
+   
         # 添加batch维度
         ref_mel_input = ref_mel[np.newaxis, :, :].astype(np.float32)  # [1, 128, 301]
         feat_input = feat[np.newaxis, :, :].astype(np.float32)  # [1, feat_len, 1024]
@@ -329,8 +269,8 @@ class RefAudioUtilities:
 def test_ref_audio_utilities():
     """测试RefAudioUtilities类"""
     # 初始化工具类
-    onnx_model_path = '/Volumes/bigdata/models/BiCodecTokenize.onnx'
-    wav2vec2_path = "/Volumes/bigdata/models/wav2vec2-large-xlsr-53.onnx"
+    onnx_model_path = '/Volumes/bigdata/models/RWKVTTS_WebRWKV/BiCodecTokenize.onnx'
+    wav2vec2_path = "/Volumes/bigdata/models/RWKVTTS_WebRWKV/wav2vec2-large-xlsr-53.onnx"
     # 使用与BiCodecTokenizer相同的参数
     utilities = RefAudioUtilities(
         onnx_model_path, 
@@ -351,8 +291,8 @@ def test_ref_audio_utilities():
             
             print(f"Global tokens shape: {global_tokens.shape}")
             print(f"Semantic tokens shape: {semantic_tokens.shape}")
-            print(f"Global tokens: {global_tokens}")
-            print(f"Semantic tokens (前10个): {semantic_tokens.flatten()[:10]}")
+            print(f"Global tokens: {global_tokens.flatten().tolist()}")
+            print(f"Semantic tokens : {semantic_tokens.flatten().tolist()}")
             
         except Exception as e:
             print(f"处理音频时出错: {e}")
