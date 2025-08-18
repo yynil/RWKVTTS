@@ -55,6 +55,9 @@ EMOTION_MAP = {
     "CONTEMPT": "SPCT_45",
 }
 
+# 注意：这里有两个GENDER_MAP定义，第二个会覆盖第一个
+# 第一个定义包含了"unknown"，第二个只包含"female"和"male"
+# 建议使用第二个定义，因为它更简洁且符合实际使用场景
 GENDER_MAP = {
     "female": "SPCT_46",
     "male": "SPCT_47"
