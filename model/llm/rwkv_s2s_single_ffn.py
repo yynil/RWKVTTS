@@ -152,6 +152,10 @@ class RWKV_Tmix_x070(nn.Module):
         w = -F.softplus(-(self.w0 + torch.tanh(xw @ self.w1) @ self.w2)) - 0.5 # soft-clamp to (-inf, -0.5)
         k = self.key(xk)
         v = self.value(xv)
+        r = r * attention_mask
+        w = w * attention_mask
+        k = k * attention_mask
+        v = v * attention_mask
         if self.layer_id == 0:
             v_first = v # store the v of the first layer
         else:
@@ -161,6 +165,7 @@ class RWKV_Tmix_x070(nn.Module):
 
         kk = k * self.k_k
         kk = F.normalize(kk.view(B,T,H,-1), dim=-1, p=2.0).view(B,T,C)
+        kk = kk * attention_mask
         k = k * (1 + (a-1) * self.k_a)
         v = v * attention_mask
         x = RUN_CUDA_RWKV7g(r, w, k, v, -kk, kk*a)
