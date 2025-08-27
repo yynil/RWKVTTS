@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-基于RWKV7S2S_SingleFFN的ASR训练脚本
+基于RWKV7S2S_SingleFFN的ASR训练脚本 - 简化版本，去掉KL散度，使用位置权重
 """
 
 import os
@@ -28,7 +28,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from model.llm.rwkv_s2s_single_ffn import RWKV7S2S_SingleFFN,L2Wrap
 from tokenizer.rwkv_tokenizer import RWKV_TOKENIZER
 
-
 # 设置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -38,12 +37,12 @@ class ScriptArguments:
     
     def __init__(self, model_path=None):
         self.output_dir = "outputs/rwkv7s2s_single_ffn_asr"
-        self.num_train_epochs = 3
-        self.per_device_train_batch_size = 4
-        self.gradient_accumulation_steps = 4
-        self.learning_rate = 1e-4
+        self.num_train_epochs = 5  # 增加训练轮数
+        self.per_device_train_batch_size = 8  # 增加批次大小
+        self.gradient_accumulation_steps = 2  # 减少梯度累积
+        self.learning_rate = 5e-5  # 调整学习率
         self.weight_decay = 0.01
-        self.warmup_steps = 0  # 不需要warmup
+        self.warmup_steps = 1000
         self.logging_steps = 10
         self.save_steps = 500
         self.eval_steps = 500
@@ -51,7 +50,7 @@ class ScriptArguments:
         self.dataloader_pin_memory = False
         self.seed = 42
         
-        # 模型配置 - 将从配置文件自动加载
+        # 模型配置
         self.n_layer = 24
         self.n_embd = 1024
         self.vocab_size = 65536
@@ -65,15 +64,16 @@ class ScriptArguments:
         self.grad_cp = 1
         self.eos_token_id = 0
         self.pad_token_id = 0
-        self.local_rank = -1  # 分布式训练的本地rank
+        self.local_rank = -1
+        
         # 数据配置
-        self.data_dir = "data"  # 数据目录
+        self.data_dir = "data"
         self.max_seq_length = 2048
         
         # DeepSpeed配置
-        self.deepspeed_config = None  # 不使用外部配置文件
-        self.ds_stage = 2  # ZeRO stage
-        self.gradient_checkpointing = True  # 启用梯度检查点
+        self.deepspeed_config = None
+        self.ds_stage = 2
+        self.gradient_checkpointing = True
         
         # 模型路径
         self.model_path = model_path
@@ -98,7 +98,6 @@ class ScriptArguments:
             self.head_size_a = config.get('head_size_a', self.head_size_a)
             self.head_size_divisor = config.get('head_size_divisor', self.head_size_divisor)
             self.dropout = config.get('dropout', self.dropout)
-            # grad_cp 将在后续通过命令行参数更新，这里先加载配置文件的值
             self.grad_cp = config.get('grad_cp', self.grad_cp)
             
             logger.info(f"从配置文件加载模型参数: {config}")
@@ -153,14 +152,12 @@ def configure_optimizer(model, args):
   
     return optimizer
 
-def save_checkpoint(model_engine,  epoch, step, args,loss,ce_loss,kl_loss,avg_loss,is_final_step=False):
+def save_checkpoint(model_engine, epoch, step, args, loss, avg_loss, is_final_step=False):
     """保存检查点"""
     if os.path.exists(args.output_dir):
         if model_engine.local_rank == 0:
             checkpoints = os.listdir(args.output_dir)
-            #only list the directories   
             checkpoints = [f for f in checkpoints if os.path.isdir(os.path.join(args.output_dir, f))]
-            #sort by creation time  
             checkpoints.sort(key=lambda x: os.path.getctime(os.path.join(args.output_dir, x)))
             checkpoints = [f for f in checkpoints if not f.startswith("checkpoint-final-")]
             if len(checkpoints) > 2:
@@ -180,8 +177,6 @@ def save_checkpoint(model_engine,  epoch, step, args,loss,ce_loss,kl_loss,avg_lo
         "epoch": epoch,
         "step": step,
         "loss": loss,
-        "ce_loss": ce_loss,
-        "kl_loss": kl_loss,
         "avg_loss": avg_loss
     }
     
@@ -210,94 +205,165 @@ def update_learning_rate(optimizer, current_step, total_steps, warmup_steps, lea
         if is_main_process and current_step % 100 == 0:
             print(f'param_group: {param_group["name"]} lr: {param_group["lr"]} weight_decay: {param_group["weight_decay"]}, params: {len(param_group["params"])}')
 
-def log_metrics(step, loss, ce_loss, kl_loss, learning_rate, args, avg_loss, all_tokens):
+def log_metrics(step, loss, learning_rate, args, avg_loss, all_tokens):
     """记录训练指标"""
     if args.local_rank in [-1, 0]:  # 只在主进程记录
         wandb.log({
             "step": step,
             "loss": loss,
-            "ce_loss": ce_loss,
-            "kl_loss": kl_loss,
             "learning_rate": learning_rate,
             "avg_loss": avg_loss,
             "Gtokens": all_tokens/(1000*1000*1000),
         })
 
-def train_step(model_engine, input_ids, labels, attention_mask, attention_mask_to_mask_audio_tokens, lambda_kl, temp):
-    """执行一步训练 - 使用合并输入的方法避免梯度累积"""
-    batch_size = input_ids.size(0)
+
+
+def compute_positional_cumulative_loss(logits, labels):
+    """计算基于位置的累积损失：前面的错误会惩罚后面的所有位置"""
+    batch_size, seq_len, vocab_size = logits.shape
     
-    # 合并两次输入：正常输入 + 屏蔽音频输入
-    # 输入形状从 (B, T) 变为 (B*2, T)
-    combined_input_ids = torch.cat([input_ids, input_ids], dim=0)
-    combined_attention_mask = torch.cat([attention_mask, attention_mask_to_mask_audio_tokens], dim=0)
+    # 重塑为2D
+    logits_flat = logits.reshape(-1, vocab_size)  # (B*T, vocab_size)
+    labels_flat = labels.reshape(-1)  # (B*T)
     
-    # 一次前向传播，输出形状为 (B*2, T, D)
-    combined_logits, _ = model_engine(combined_input_ids, combined_attention_mask, is_text=True)
+    # 计算每个位置的交叉熵损失
+    ce_loss = torch.nn.functional.cross_entropy(logits_flat, labels_flat, reduction='none')  # (B*T)
     
-    # 分离两种输入的结果
-    # logits[0:B, :, :] 是有音频输入的logits
-    # logits[B:, :, :] 是无音频输入的logits
-    text_logits = combined_logits[:batch_size, :, :]  # (B, T, D)
-    fake_text_logits = combined_logits[batch_size:, :, :]  # (B, T, D)
-    
-    # 计算交叉熵损失（只对有音频输入的部分）
-    ce_loss = torch.nn.functional.cross_entropy(text_logits.view(-1, text_logits.size(-1)), labels.view(-1))
-    
-    # 计算KL散度损失
-    # 使用更稳定的KL散度计算方式
-    text_probs = torch.softmax(text_logits/temp, dim=-1)
-    fake_text_probs = torch.softmax(fake_text_logits.detach()/temp, dim=-1)
+    # 重塑回原始形状
+    ce_loss = ce_loss.reshape(batch_size, seq_len)  # (B, T)
+    labels_reshaped = labels_flat.reshape(batch_size, seq_len)  # (B, T)
     
     # 创建有效位置mask
-    valid_positions = (labels != -100)  # (B, T)
+    valid_mask = (labels_reshaped != -100)  # (B, T)
     
-    if valid_positions.sum() > 0:
-        # 只对有效位置计算KL散度
-        # 提取有效位置的概率分布
-        text_probs_valid = text_probs[valid_positions]  # (N_valid, vocab_size)
-        fake_text_probs_valid = fake_text_probs[valid_positions]  # (N_valid, vocab_size)
-        
-        # 确保概率分布有效（避免log(0)）
-        text_probs_safe = torch.clamp(text_probs_valid, min=1e-8, max=1.0)
-        fake_text_probs_safe = torch.clamp(fake_text_probs_valid, min=1e-8, max=1.0)
-        
-        # 重新归一化概率分布
-        text_probs_norm = text_probs_safe / text_probs_safe.sum(dim=-1, keepdim=True)
-        fake_text_probs_norm = fake_text_probs_safe / fake_text_probs_safe.sum(dim=-1, keepdim=True)
-        
-        # 计算KL散度：D_KL(text_probs || fake_text_probs)
-        # 使用PyTorch内置的KL散度函数，更稳定且正确
-        kl_div = torch.nn.functional.kl_div(
-            torch.log(fake_text_probs_norm + 1e-8),  # 输入log概率
-            text_probs_norm,  # 目标概率
-            reduction='none'
-        ).sum(dim=-1)  # 在词汇维度上求和
-        
-        kl_loss = kl_div.mean()
+    # 计算随机猜测的交叉熵损失作为clamp的上限
+    random_guess_ce = -torch.log(torch.tensor(1.0 / vocab_size, device=logits.device))
+    clamp_value = random_guess_ce * 2.0  # 设置为随机猜测损失的2倍作为上限
+    
+    # 添加调试信息
+    if hasattr(compute_positional_cumulative_loss, 'step_count'):
+        compute_positional_cumulative_loss.step_count += 1
     else:
-        kl_loss = torch.tensor(0.0, device=text_logits.device, dtype=text_logits.dtype)
+        compute_positional_cumulative_loss.step_count = 0
     
-    # 确保KL损失为非负值，并限制最大值避免数值不稳定
-    # kl_loss = torch.clamp(kl_loss, min=0.0, max=10.0)
+    if compute_positional_cumulative_loss.step_count % 100 == 0:
+        print(f"Clamp value: {clamp_value:.4f}, Random guess CE: {random_guess_ce:.4f}")
     
-    # 总损失：CE损失 - KL散度损失（我们希望KL散度越大越好，即差异越大越好）
-    total_loss = ce_loss - lambda_kl * kl_loss
+    # 统计每个batch第一个位置的CE值
+    first_pos_ce_values = []
     
-    return {
-        'loss': total_loss,
-        'ce_loss': ce_loss,
-        'kl_loss': kl_loss
-    }
+    # 使用向量化操作计算累积损失，避免循环中的in-place操作
+    cumulative_losses = []
+    
+    for b in range(batch_size):
+        # 找到这个batch中有效的位置
+        valid_positions = valid_mask[b].nonzero(as_tuple=True)[0]
+        
+        if len(valid_positions) > 0:
+            # 记录第一个位置的CE值
+            first_pos_ce = ce_loss[b, valid_positions[0]]
+            first_pos_ce_values.append(first_pos_ce.item())
+            
+            # 提取这个batch的有效损失
+            batch_ce_losses = ce_loss[b, valid_positions]  # (N_valid,)
+            
+            # 计算累积损失：使用cumsum
+            # 对于位置i，累积损失 = sum(ce_loss[j] for j <= i)
+            cumulative_batch_losses = torch.cumsum(batch_ce_losses, dim=0)  # (N_valid,)
+            
+            # 应用clamp
+            cumulative_batch_losses = torch.clamp(cumulative_batch_losses, max=clamp_value)
+            
+            cumulative_losses.append(cumulative_batch_losses)
+    
+    # 合并所有batch的累积损失
+    if cumulative_losses:
+        all_cumulative_losses = torch.cat(cumulative_losses, dim=0)
+        final_loss = all_cumulative_losses.mean()
+    else:
+        final_loss = torch.tensor(0.0, device=logits.device, requires_grad=True)
+    
+    # 计算第一个位置CE值的统计信息
+    if first_pos_ce_values:
+        first_pos_ce_mean = sum(first_pos_ce_values) / len(first_pos_ce_values)
+        first_pos_ce_min = min(first_pos_ce_values)
+        first_pos_ce_max = max(first_pos_ce_values)
+        
+        # 将统计信息存储到函数属性中，供train_step使用
+        compute_positional_cumulative_loss.first_pos_stats = {
+            'mean': first_pos_ce_mean,
+            'min': first_pos_ce_min,
+            'max': first_pos_ce_max,
+            'count': len(first_pos_ce_values)
+        }
+    
+    # 检查最终损失
+    if torch.isnan(final_loss) or torch.isinf(final_loss):
+        print(f"Warning: Final loss is {final_loss}, using safe fallback")
+        # 使用简单的平均交叉熵作为fallback
+        safe_loss = ce_loss[valid_mask].mean()
+        return safe_loss
+    
+    return final_loss
 
-
+def train_step(model_engine, input_ids, labels, attention_mask):
+    """简化的训练步骤 - 使用累积损失强制模型关注前面tokens"""
+    # 直接前向传播
+    logits, _ = model_engine(input_ids, attention_mask, is_text=True)
+    
+    # 检查logits是否有NaN
+    if torch.isnan(logits).any() or torch.isinf(logits).any():
+        print("Warning: NaN/Inf detected in logits, returning safe loss values")
+        safe_loss = torch.where(torch.isnan(logits) | torch.isinf(logits), 
+                               torch.zeros_like(logits), logits).sum() * 0.0
+        return safe_loss
+    
+    # 计算累积损失：前面的错误会惩罚后面的所有位置
+    loss = compute_positional_cumulative_loss(logits, labels)
+    
+    # 添加调试信息
+    if hasattr(train_step, 'step_count'):
+        train_step.step_count += 1
+    else:
+        train_step.step_count = 0
+    
+    if train_step.step_count % 100 == 0:
+        print(f"Step {train_step.step_count}: Cumulative Loss: {loss.item():.4f}")
+        # 计算常规交叉熵损失作为对比
+        with torch.no_grad():
+            ce_loss_flat = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), reduction='none')
+            valid_mask = (labels.view(-1) != -100)
+            if valid_mask.sum() > 0:
+                regular_ce = ce_loss_flat[valid_mask].mean()
+                print(f"  Regular CE Loss: {regular_ce.item():.4f}")
+            
+            # 显示第一个位置的CE统计信息
+            if hasattr(compute_positional_cumulative_loss, 'first_pos_stats'):
+                stats = compute_positional_cumulative_loss.first_pos_stats
+                print(f"  First Position CE - Mean: {stats['mean']:.4f}, Min: {stats['min']:.4f}, Max: {stats['max']:.4f} (from {stats['count']} samples)")
+                
+                # 计算随机猜测的CE作为参考
+                vocab_size = logits.size(-1)
+                random_guess_ce = -torch.log(torch.tensor(1.0 / vocab_size, device=logits.device))
+                print(f"  Random Guess CE: {random_guess_ce.item():.4f}")
+                
+                # 如果第一个位置的CE接近随机猜测，说明模型还没有学会从音频预测
+                if stats['mean'] > random_guess_ce.item() * 0.9:
+                    print(f"  ⚠️  Warning: First position CE is close to random guess, model may not be learning from audio!")
+                elif stats['mean'] < random_guess_ce.item() * 0.5:
+                    print(f"  ✅ Good: First position CE is significantly better than random guess!")
+    
+    # 应用L2Wrap
+    loss = L2Wrap.apply(loss, logits)
+    
+    return loss
 
 def create_asr_inputs_and_labels_simple(batch, tokenizer, eos_token_id, pad_token_id):
     """为ASR任务创建简化的输入和标签，支持left shift预测，序列长度必须是16的倍数"""
     from utils.s2s_utilities import create_asr_inputs_and_labels
     
-    # 调用utils中的函数
-    input_ids, labels, attention_mask, attention_mask_to_mask_audio_tokens = create_asr_inputs_and_labels(batch, tokenizer, eos_token_id, pad_token_id)
+    # 调用utils中的函数（只返回3个值）
+    input_ids, labels, attention_mask = create_asr_inputs_and_labels(batch, tokenizer, eos_token_id, pad_token_id)
     
     # 确保序列长度是16的倍数，如果不是则进行左填充
     batch_size, seq_len = input_ids.shape
@@ -305,7 +371,6 @@ def create_asr_inputs_and_labels_simple(batch, tokenizer, eos_token_id, pad_toke
     
     if target_len > seq_len:
         pad_len = target_len - seq_len
-        # 只在第一次遇到这种情况时打印
         if not hasattr(create_asr_inputs_and_labels_simple, '_printed_padding_warning'):
             print(f"序列长度 {seq_len} 不是16的倍数，左填充 {pad_len} 个token到 {target_len}")
             create_asr_inputs_and_labels_simple._printed_padding_warning = True
@@ -313,22 +378,21 @@ def create_asr_inputs_and_labels_simple(batch, tokenizer, eos_token_id, pad_toke
         new_input_ids = torch.full((batch_size, target_len), pad_token_id, dtype=torch.long)
         new_labels = torch.full((batch_size, target_len), -100, dtype=torch.long)
         new_attention_mask = torch.zeros((batch_size, target_len), dtype=torch.long)
-        new_attention_mask_to_mask_audio_tokens = torch.zeros((batch_size, target_len), dtype=torch.long)
+        
         new_input_ids[:, pad_len:] = input_ids
         new_labels[:, pad_len:] = labels
         new_attention_mask[:, pad_len:] = attention_mask
-        new_attention_mask_to_mask_audio_tokens[:, pad_len:] = attention_mask_to_mask_audio_tokens
+        
         input_ids = new_input_ids
         labels = new_labels
         attention_mask = new_attention_mask
-        attention_mask_to_mask_audio_tokens = new_attention_mask_to_mask_audio_tokens
     
     # 对labels进行left shift，使模型能够预测下一个token
     batch_size, seq_len = labels.shape
     shifted_labels = torch.full((batch_size, seq_len), -100, dtype=torch.long)
     shifted_labels[:, :-1] = labels[:, 1:]
     
-    return input_ids, shifted_labels, attention_mask, attention_mask_to_mask_audio_tokens
+    return input_ids, shifted_labels, attention_mask
 
 def load_and_prepare_dataset(args):
     """加载和准备数据集"""
@@ -342,7 +406,7 @@ def load_and_prepare_dataset(args):
     
     dataset = load_dataset("json", data_files=jsonl_files, split="train")
     
-    return dataset  # 暂时使用同一个数据集作为train和val
+    return dataset
 
 def collate_fn(batch):
     """数据整理函数"""
@@ -353,12 +417,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True, help="模型目录路径")
     parser.add_argument("--deepspeed_config", type=str, default=None, help="DeepSpeed配置文件路径（可选）")
-    parser.add_argument("--ds_stage", type=int, default=2, help="DeepSpeed ZeRO stage (默认: 3)")
+    parser.add_argument("--ds_stage", type=int, default=2, help="DeepSpeed ZeRO stage (默认: 2)")
     parser.add_argument("--gradient_checkpointing", action="store_true", default=True, help="启用梯度检查点")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=4, help="每个设备的训练批次大小")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="梯度累积步数")
-    parser.add_argument("--learning_rate", type=float, default=1e-4, help="学习率")
-    parser.add_argument("--num_train_epochs", type=int, default=3, help="训练轮数")
+    parser.add_argument("--per_device_train_batch_size", type=int, default=8, help="每个设备的训练批次大小")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=2, help="梯度累积步数")
+    parser.add_argument("--learning_rate", type=float, default=5e-5, help="学习率")
+    parser.add_argument("--num_train_epochs", type=int, default=5, help="训练轮数")
     parser.add_argument("--output_dir", type=str, default="outputs/rwkv7s2s_single_ffn_asr", help="输出目录")
     parser.add_argument("--data_dir", type=str, default="data", help="数据目录")
     parser.add_argument("--weight_decay", type=float, default=0.1, help="权重衰减")
@@ -369,8 +433,7 @@ def main():
     parser.add_argument("--learning_rate_final", type=float, default=1e-5, help="最终学习率")
     parser.add_argument("--local_rank", type=int, default=-1)
     parser.add_argument("--max_k_tokens_per_batch", type=int, default=64, help="每个批次的最大序列长度")
-    parser.add_argument("--lambda_kl", type=float, default=0.1, help="KL损失的权重")
-    parser.add_argument("--temp", type=float, default=1, help="温度")
+
     parser.add_argument("--dropout", type=float, default=0.1, help="dropout")
 
     args = parser.parse_args()
@@ -392,10 +455,9 @@ def main():
         with open(args.deepspeed_config, 'r') as f:
             ds_config = json.load(f)
     else:
-        # 自动生成DeepSpeed配置，使用ZeRO-3 with CPU offload
+        # 自动生成DeepSpeed配置
         if is_main_process:
             logger.info("Using auto-generated DeepSpeed config")
-        # 先创建model_args，然后再使用它
         model_args = ScriptArguments(args.model_path)
         # 更新命令行参数
         model_args.per_device_train_batch_size = args.per_device_train_batch_size
@@ -414,9 +476,8 @@ def main():
         model_args.learning_rate_final = args.learning_rate_final
         model_args.local_rank = args.local_rank
         model_args.grad_cp = 1 if args.gradient_checkpointing else 0
-        model_args.lambda_kl = args.lambda_kl
-        model_args.temp = args.temp
         model_args.dropout = args.dropout
+        
         train_batch_size = model_args.per_device_train_batch_size * world_size
         ds_config = {
             "distributed_backend": "nccl",
@@ -485,7 +546,7 @@ def main():
         logger.info(f"可训练参数数量: {trainable_count}")
         logger.info("训练策略: 全模型调参（包括ffn参数）")
     
-    # 加载tokenizer - 自动从模型目录加载词汇表文件
+    # 加载tokenizer
     vocab_file = os.path.join(args.model_path, "rwkv_vocab_enlarged.txt")
     logger.info(f"使用模型目录中的词汇表文件: {vocab_file}")
     tokenizer = RWKV_TOKENIZER(vocab_file)
@@ -522,15 +583,13 @@ def main():
     
     # 初始化wandb
     if args.local_rank in [-1, 0]:
-        wandb.init(project="rwkv7s2s-single-ffn-asr", name="asr-training")
+        wandb.init(project="rwkv7s2s-single-ffn-asr", name="asr-training-simplified")
     
     # 训练循环
     global_step = 0
     total_steps = len(train_dataloader) * model_args.num_train_epochs
     all_tokens = 0
-    lambda_kl = model_args.lambda_kl  # 降低KL损失的权重
-    temp = model_args.temp
-    dropout = model_args.dropout
+    
     for epoch in range(model_args.num_train_epochs):
         progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{model_args.num_train_epochs}")
         sum_loss = 0
@@ -538,38 +597,44 @@ def main():
             # 创建输入和标签
             if step == 0 and is_main_process:
                 print(f"batch: {batch}")
-            input_ids, labels, attention_mask, attention_mask_to_mask_audio_tokens = create_asr_inputs_and_labels_simple(
+            
+            input_ids, labels, attention_mask = create_asr_inputs_and_labels_simple(
                 batch, tokenizer, model_args.eos_token_id, model_args.pad_token_id
             )
+            
             if step == 0 and is_main_process:
                 print(f"input_ids: {input_ids}")
                 print(f"labels: {labels}")
                 print(f"attention_mask: {attention_mask}")
-                print(f"attention_mask_to_mask_audio_tokens: {attention_mask_to_mask_audio_tokens}")
-            B,T = input_ids.shape
-            current_tokens = B*T
-            # 由于我们使用合并输入的方法，实际批次大小会是2*B，所以需要限制原始批次大小
-            max_batch = (args.max_k_tokens_per_batch * 1024) // (T * 2)  # 除以2是因为实际批次大小是2*B
+            
+            B, T = input_ids.shape
+            current_tokens = B * T
+            
+            # 限制批次大小
+            max_batch = (args.max_k_tokens_per_batch * 1024) // T
             if B > max_batch:
-                print(f"当前批次序列长度 {B} ，实际批次大小将是 {B*2}，总 {current_tokens*2} 超过最大限制 {max_batch*2}，Truncate it!")
-                input_ids = input_ids[:max_batch,:]
-                labels = labels[:max_batch,:]
-                attention_mask = attention_mask[:max_batch,:]
-                attention_mask_to_mask_audio_tokens = attention_mask_to_mask_audio_tokens[:max_batch,:]
-            all_tokens += input_ids.shape[0]*input_ids.shape[1]*2  # 乘以2是因为实际处理了2倍的token
+                print(f"当前批次序列长度 {B}，总tokens {current_tokens} 超过最大限制，截断!")
+                input_ids = input_ids[:max_batch, :]
+                labels = labels[:max_batch, :]
+                attention_mask = attention_mask[:max_batch, :]
+            
+            all_tokens += input_ids.shape[0] * input_ids.shape[1]
+            
             # 移动到设备
             input_ids = input_ids.to(device)
             labels = labels.to(device)
             attention_mask = attention_mask.to(device)
-            attention_mask_to_mask_audio_tokens = attention_mask_to_mask_audio_tokens.to(device)
+            
             # 前向传播和反向传播
-            outputs = train_step(model_engine, input_ids, labels, attention_mask, attention_mask_to_mask_audio_tokens, lambda_kl=model_args.lambda_kl, temp=temp)
-            loss = outputs['loss']
-            ce_loss = outputs['ce_loss']
-            kl_loss = outputs['kl_loss']
+            loss = train_step(
+                model_engine, 
+                input_ids, 
+                labels, 
+                attention_mask
+            )
             
             sum_loss += loss.item()
-            avg_loss = sum_loss/(step+1)
+            avg_loss = sum_loss / (step + 1)
             
             # 反向传播
             model_engine.backward(loss)
@@ -577,11 +642,14 @@ def main():
             
             # 添加调试信息
             if step % 100 == 0 and is_main_process:
-                print(f"Step {step}: CE Loss: {ce_loss.item():.4f}, KL Loss: {kl_loss.item():.4f}, Total Loss: {loss.item():.4f}")
-                print(f"  Batch size: {B}, Combined batch size: {B*2}, Tokens processed: {input_ids.shape[0]*input_ids.shape[1]*2}")
+                print(f"Step {step}: Loss: {loss.item():.4f}")
+                print(f"  Batch size: {B}, Tokens processed: {input_ids.shape[0] * input_ids.shape[1]}")
             
             # 更新进度条
-            progress_bar.set_postfix({"loss": f"{loss.item():.4f} avg_loss: {avg_loss:.4f} ce_loss: {ce_loss.item():.4f} kl_loss: {kl_loss.item():.4f}"})
+            progress_bar.set_postfix({
+                "loss": f"{loss.item():.4f}", 
+                "avg_loss": f"{avg_loss:.4f}"
+            })
             
             # 更新学习率
             update_learning_rate(
@@ -598,17 +666,17 @@ def main():
             # 记录指标
             if global_step % model_args.logging_steps == 0:
                 current_lr = optimizer.param_groups[0]['lr']
-                log_metrics(global_step, loss.item(), ce_loss.item(), kl_loss.item(), current_lr, args, avg_loss, all_tokens)
+                log_metrics(global_step, loss.item(), current_lr, args, avg_loss, all_tokens)
             
             # 保存检查点
             if global_step % model_args.save_steps == 0 and global_step > 0:
-                save_checkpoint(model_engine, epoch, global_step, model_args,loss.item(),ce_loss.item(),kl_loss.item(),avg_loss,is_final_step=False)
+                save_checkpoint(model_engine, epoch, global_step, model_args, loss.item(), avg_loss, is_final_step=False)
             
             global_step += 1
     
     # 保存最终模型
     if args.local_rank in [-1, 0]:
-        save_checkpoint(model_engine, model_args.num_train_epochs, global_step, model_args,loss.item(),ce_loss.item(),kl_loss.item(),avg_loss,is_final_step=True)
+        save_checkpoint(model_engine, model_args.num_train_epochs, global_step, model_args, loss.item(), avg_loss, is_final_step=True)
         logger.info("训练完成！")
 
 if __name__ == "__main__":
