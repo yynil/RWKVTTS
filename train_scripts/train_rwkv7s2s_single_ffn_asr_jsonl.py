@@ -219,26 +219,22 @@ def log_metrics(step, loss, learning_rate, args, avg_loss, all_tokens):
 
 
 def compute_positional_cumulative_loss(logits, labels):
-    """计算基于位置的累积损失：前面的错误会惩罚后面的所有位置"""
+    """计算基于位置的累积损失：前面的错误会惩罚后面的所有位置 - 完全向量化版本"""
     batch_size, seq_len, vocab_size = logits.shape
     
-    # 重塑为2D
-    logits_flat = logits.reshape(-1, vocab_size)  # (B*T, vocab_size)
-    labels_flat = labels.reshape(-1)  # (B*T)
-    
     # 计算每个位置的交叉熵损失
-    ce_loss = torch.nn.functional.cross_entropy(logits_flat, labels_flat, reduction='none')  # (B*T)
-    
-    # 重塑回原始形状
-    ce_loss = ce_loss.reshape(batch_size, seq_len)  # (B, T)
-    labels_reshaped = labels_flat.reshape(batch_size, seq_len)  # (B, T)
+    ce_loss = torch.nn.functional.cross_entropy(
+        logits.view(-1, vocab_size), 
+        labels.view(-1), 
+        reduction='none'
+    ).view(batch_size, seq_len)  # (B, T)
     
     # 创建有效位置mask
-    valid_mask = (labels_reshaped != -100)  # (B, T)
+    valid_mask = (labels != -100)  # (B, T)
     
     # 计算随机猜测的交叉熵损失作为clamp的上限
     random_guess_ce = -torch.log(torch.tensor(1.0 / vocab_size, device=logits.device))
-    clamp_value = random_guess_ce * 2.0  # 设置为随机猜测损失的2倍作为上限
+    clamp_value = random_guess_ce * 2.0
     
     # 添加调试信息
     if hasattr(compute_positional_cumulative_loss, 'step_count'):
@@ -249,58 +245,39 @@ def compute_positional_cumulative_loss(logits, labels):
     if compute_positional_cumulative_loss.step_count % 100 == 0:
         print(f"Clamp value: {clamp_value:.4f}, Random guess CE: {random_guess_ce:.4f}")
     
-    # 统计每个batch第一个位置的CE值
-    first_pos_ce_values = []
+    # 统计第一个位置的CE值（向量化）
+    first_pos_mask = valid_mask & (torch.arange(seq_len, device=logits.device).unsqueeze(0) == valid_mask.long().argmax(dim=1, keepdim=True))
+    first_pos_ce_values = ce_loss[first_pos_mask]
     
-    # 使用向量化操作计算累积损失，避免循环中的in-place操作
-    cumulative_losses = []
-    
-    for b in range(batch_size):
-        # 找到这个batch中有效的位置
-        valid_positions = valid_mask[b].nonzero(as_tuple=True)[0]
-        
-        if len(valid_positions) > 0:
-            # 记录第一个位置的CE值
-            first_pos_ce = ce_loss[b, valid_positions[0]]
-            first_pos_ce_values.append(first_pos_ce.item())
-            
-            # 提取这个batch的有效损失
-            batch_ce_losses = ce_loss[b, valid_positions]  # (N_valid,)
-            
-            # 计算累积损失：使用cumsum
-            # 对于位置i，累积损失 = sum(ce_loss[j] for j <= i)
-            cumulative_batch_losses = torch.cumsum(batch_ce_losses, dim=0)  # (N_valid,)
-            
-            # 应用clamp
-            cumulative_batch_losses = torch.clamp(cumulative_batch_losses, max=clamp_value)
-            
-            cumulative_losses.append(cumulative_batch_losses)
-    
-    # 合并所有batch的累积损失
-    if cumulative_losses:
-        all_cumulative_losses = torch.cat(cumulative_losses, dim=0)
-        final_loss = all_cumulative_losses.mean()
-    else:
-        final_loss = torch.tensor(0.0, device=logits.device, requires_grad=True)
-    
-    # 计算第一个位置CE值的统计信息
-    if first_pos_ce_values:
-        first_pos_ce_mean = sum(first_pos_ce_values) / len(first_pos_ce_values)
-        first_pos_ce_min = min(first_pos_ce_values)
-        first_pos_ce_max = max(first_pos_ce_values)
-        
-        # 将统计信息存储到函数属性中，供train_step使用
+    if len(first_pos_ce_values) > 0:
         compute_positional_cumulative_loss.first_pos_stats = {
-            'mean': first_pos_ce_mean,
-            'min': first_pos_ce_min,
-            'max': first_pos_ce_max,
+            'mean': first_pos_ce_values.mean().item(),
+            'min': first_pos_ce_values.min().item(),
+            'max': first_pos_ce_values.max().item(),
             'count': len(first_pos_ce_values)
         }
+    
+    # 完全向量化的累积损失计算
+    # 1. 将无效位置设为0
+    ce_loss_masked = ce_loss * valid_mask.float()
+    
+    # 2. 对每个序列计算累积和
+    # 使用cumsum，但只对有效位置进行累积
+    cumulative_losses = torch.cumsum(ce_loss_masked, dim=1)  # (B, T)
+    
+    # 3. 只保留有效位置的累积损失
+    valid_cumulative_losses = cumulative_losses[valid_mask]
+    
+    # 4. 应用clamp
+    if len(valid_cumulative_losses) > 0:
+        valid_cumulative_losses = torch.clamp(valid_cumulative_losses, max=clamp_value)
+        final_loss = valid_cumulative_losses.mean()
+    else:
+        final_loss = torch.tensor(0.0, device=logits.device, requires_grad=True)
     
     # 检查最终损失
     if torch.isnan(final_loss) or torch.isinf(final_loss):
         print(f"Warning: Final loss is {final_loss}, using safe fallback")
-        # 使用简单的平均交叉熵作为fallback
         safe_loss = ce_loss[valid_mask].mean()
         return safe_loss
     
