@@ -52,6 +52,7 @@ def create_asr_inputs_and_labels(batch, tokenizer, eos_id=0, pad_id=0):
     audio_attention_mask_list = []
     text_attention_mask_list = []
     labels_list = []
+    labels_attention_mask_list = []
     
     for item in batch:
         semantic_tokens = item['semantic_tokens']
@@ -68,42 +69,39 @@ def create_asr_inputs_and_labels(batch, tokenizer, eos_id=0, pad_id=0):
         audio_input_ids = torch.tensor(semantic_tokens, dtype=torch.long)
         audio_attention_mask = torch.ones(len(semantic_tokens), dtype=torch.long)
         
-        # 文本输入：指令 + 目标文本
-        target_text_ids = torch.tensor(tokenizer.encode(text), dtype=torch.long)
-        full_text_input_ids = torch.cat([text_input_ids, target_text_ids, torch.tensor([eos_id], dtype=torch.long)], dim=0)
-        text_attention_mask = torch.ones(len(full_text_input_ids), dtype=torch.long)
+        # 文本输入：只包含指令文本（不包含目标文本）
+        # 指令文本就是预定义的指令，比如"User: 把以下音频转写为中文。"
+        text_input_ids_list.append(text_input_ids)
+        text_attention_mask_list.append(torch.ones(len(text_input_ids), dtype=torch.long))
         
-        # 标签：只对目标文本部分计算损失
-        labels = torch.full((len(full_text_input_ids),), -100, dtype=torch.long)
-        start_idx = len(text_input_ids) - 1
-        end_idx = start_idx + len(target_text_ids)
-        labels[start_idx:end_idx] = target_text_ids
-        labels[end_idx] = eos_id
+        # 标签：目标文本 + EOS token
+        target_text_ids = torch.tensor(tokenizer.encode(text), dtype=torch.long)
+        labels = torch.cat([target_text_ids, torch.tensor([eos_id], dtype=torch.long)], dim=0)
+        labels_list.append(labels)
+        
+        # 标签attention mask：全1，表示所有标签都有效
+        labels_attention_mask = torch.ones(len(labels), dtype=torch.long)
+        labels_attention_mask_list.append(labels_attention_mask)
         
         audio_input_ids_list.append(audio_input_ids)
-        text_input_ids_list.append(full_text_input_ids)
         audio_attention_mask_list.append(audio_attention_mask)
-        text_attention_mask_list.append(text_attention_mask)
-        labels_list.append(labels)
     
-    # 填充到相同长度（左填充）
     from torch.nn.utils.rnn import pad_sequence
     
-    # 对于LLM训练，使用左填充更合适
-    # 音频序列也使用左填充（保持顺序）
-    audio_input_ids = pad_sequence(audio_input_ids_list, batch_first=True, padding_value=0, padding_side='left')
-    audio_attention_mask = pad_sequence(audio_attention_mask_list, batch_first=True, padding_value=0, padding_side='left')
+    audio_input_ids = pad_sequence(audio_input_ids_list, batch_first=True, padding_value=0,padding_side='left')
+    audio_attention_mask = pad_sequence(audio_attention_mask_list, batch_first=True, padding_value=0,padding_side='left')
     
-    # 文本相关序列使用左填充
-    text_input_ids = pad_sequence(text_input_ids_list, batch_first=True, padding_value=0, padding_side='left')
-    text_attention_mask = pad_sequence(text_attention_mask_list, batch_first=True, padding_value=0, padding_side='left')
-    labels = pad_sequence(labels_list, batch_first=True, padding_value=-100, padding_side='left')
+    text_input_ids = pad_sequence(text_input_ids_list, batch_first=True, padding_value=0,padding_side='left')
+    text_attention_mask = pad_sequence(text_attention_mask_list, batch_first=True, padding_value=0,padding_side='left')
     
-    return audio_input_ids, text_input_ids, audio_attention_mask, text_attention_mask, labels, hints_ids
+    labels = pad_sequence(labels_list, batch_first=True, padding_value=-100,padding_side='left')
+    labels_attention_mask = pad_sequence(labels_attention_mask_list, batch_first=True, padding_value=0,padding_side='left')
+    
+    return audio_input_ids, text_input_ids, audio_attention_mask, text_attention_mask, labels, labels_attention_mask, hints_ids
 
-def train_step(model_engine, audio_input_ids, text_input_ids, audio_attention_mask, text_attention_mask, labels, hints_ids):
+def train_step(model_engine, audio_input_ids, text_input_ids, audio_attention_mask, text_attention_mask, labels, labels_attention_mask, hints_ids):
     """训练步骤"""
-    output = model_engine(audio_input_ids, text_input_ids, audio_attention_mask, text_attention_mask,labels, hints_ids)
+    output = model_engine(audio_input_ids, text_input_ids, audio_attention_mask, text_attention_mask, labels, labels_attention_mask, hints_ids)
     loss = output.loss
     return loss
 
@@ -128,7 +126,7 @@ def configure_optimizer(model, args):
             continue
         
         # 只训练audio_lm_model和projector，冻结llm参数
-        if "llm." in n:
+        if "llm." in n and not args.full_params:
             p.requires_grad = False
             continue
         
@@ -258,6 +256,7 @@ def main():
     parser.add_argument("--local_rank", type=int, default=-1)
     parser.add_argument("--max_k_tokens_per_batch", type=int, required=True, help="每个batch的最大token数")
     parser.add_argument("--gradient_clipping", type=float, default=0.5, help="梯度裁剪阈值")
+    parser.add_argument("--full_params", action="store_true", help="使用全参数训练",default=False)
     
     args = parser.parse_args()
     
@@ -353,8 +352,8 @@ def main():
         print("初始化全局预编码变量...")
     
     # 预定义的中英文指令
-    chinese_instruction = "User: 把以上音频转化为中文。"
-    english_instruction = "User: Convert the audios to English."
+    chinese_instruction = "User: 把以下音频转写为中文。\n"
+    english_instruction = "User: Convert the audios to English.\n"
     # 预编码指令
     global _global_text_input_ids_chinese, _global_text_input_ids_english, _global_hints_ids
     _global_text_input_ids_chinese = torch.tensor(tokenizer.encode(chinese_instruction), dtype=torch.long)
@@ -509,8 +508,8 @@ def main():
             
             # 创建输入和标签
             try:
-                audio_input_ids, text_input_ids, audio_attention_mask, text_attention_mask, labels, hints_ids = create_asr_inputs_and_labels(batch, tokenizer)
-                input_size_per_sample = (audio_input_ids.shape[1] + text_input_ids.shape[1])
+                audio_input_ids, text_input_ids, audio_attention_mask, text_attention_mask, labels, labels_attention_mask, hints_ids = create_asr_inputs_and_labels(batch, tokenizer)
+                input_size_per_sample = (audio_input_ids.shape[1] + text_input_ids.shape[1] + labels.shape[1])
                 current_k_tokens = input_size_per_sample* audio_input_ids.shape[0]
                 if current_k_tokens > args.max_k_tokens_per_batch * 1024:
                     print(f"当前batch的token数超过最大限制: {current_k_tokens} > {args.max_k_tokens_per_batch}")
@@ -521,9 +520,18 @@ def main():
                     audio_attention_mask = audio_attention_mask[:max_bsz, :]
                     text_attention_mask = text_attention_mask[:max_bsz, :]
                     labels = labels[:max_bsz, :]
+                    labels_attention_mask = labels_attention_mask[:max_bsz, :]
                     # hints_ids不需要调整，因为它是全局共享的
                 if step == 0 and is_main_process:
-                    print(f"输入形状: audio={audio_input_ids.shape}, text={text_input_ids.shape}, labels={labels.shape}")
+                    print(f"输入形状: audio={audio_input_ids.shape}, text={text_input_ids.shape}, labels={labels.shape}, labels_attention_mask={labels_attention_mask.shape}")
+                    print(f"Token统计: audio={audio_input_ids.shape[0] * audio_input_ids.shape[1]}, text={text_input_ids.shape[0] * text_input_ids.shape[1]}, labels={labels.shape[0] * labels.shape[1]}")
+                    print(f"总token数: {current_k_tokens}")
+                    print(f"Batch大小: {audio_input_ids.shape[0]}")
+                    print(f"每个样本的token数: {input_size_per_sample}")
+                    print(f"最大token限制: {args.max_k_tokens_per_batch * 1024}")
+                    print(f"是否需要调整batch大小: {'是' if current_k_tokens > args.max_k_tokens_per_batch * 1024 else '否'}")
+                    print(f"调整后的batch大小: {max_bsz if current_k_tokens > args.max_k_tokens_per_batch * 1024 else '无需调整'}")
+                    print(f"调整后的总token数: {max_bsz * input_size_per_sample if current_k_tokens > args.max_k_tokens_per_batch * 1024 else current_k_tokens}")
                     
             except Exception as e:
                 if is_main_process:
@@ -537,10 +545,19 @@ def main():
             audio_attention_mask = audio_attention_mask.to(device)
             text_attention_mask = text_attention_mask.to(device)
             labels = labels.to(device)
+            labels_attention_mask = labels_attention_mask.to(device)
             hints_ids = hints_ids.to(device)
+            if not hasattr(main,'first_batch_done'):
+                main.first_batch_done = True
+                print(f"第一个batch完成，audio_input_ids={audio_input_ids.shape}, text_input_ids={text_input_ids.shape}, audio_attention_mask={audio_attention_mask.shape}, text_attention_mask={text_attention_mask.shape}, labels={labels.shape}, labels_attention_mask={labels_attention_mask.shape}, hints_ids={hints_ids.shape}")
+                print(f'audio attention mask={audio_attention_mask}')
+                print(f'text attention mask={text_attention_mask}')
+                print(f'labels={labels}')
+                print(f'labels attention mask={labels_attention_mask}')
+                print(f'hints_ids={hints_ids}')
             
             # 前向传播和反向传播
-            loss = train_step(model_engine, audio_input_ids, text_input_ids, audio_attention_mask, text_attention_mask, labels, hints_ids)
+            loss = train_step(model_engine, audio_input_ids, text_input_ids, audio_attention_mask, text_attention_mask, labels, labels_attention_mask, hints_ids)
             
             # 检查loss是否为nan - 使用分布式同步
             is_nan_or_inf = torch.isnan(loss) or torch.isinf(loss)
@@ -584,10 +601,11 @@ def main():
             
             model_engine.step()
             
-            # 计算总 tokens（包括音频和文本）
+            # 计算总 tokens（包括音频、文本和标签）
             audio_tokens = audio_input_ids.shape[0] * audio_input_ids.shape[1]
             text_tokens = text_input_ids.shape[0] * text_input_ids.shape[1]
-            all_tokens += audio_tokens + text_tokens
+            labels_tokens = labels.shape[0] * labels.shape[1]
+            all_tokens += audio_tokens + text_tokens + labels_tokens
             
             # 获取当前学习率
             current_lr = optimizer.param_groups[0]['lr']
