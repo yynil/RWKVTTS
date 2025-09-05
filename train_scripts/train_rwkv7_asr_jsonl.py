@@ -33,7 +33,7 @@ _global_text_input_ids_chinese = None
 _global_text_input_ids_english = None
 _global_hints_ids = None
 
-def create_asr_inputs_and_labels(batch, tokenizer, eos_id=0, pad_id=0):
+def create_asr_inputs_and_labels(batch, tokenizer, eos_id=0, pad_id=0,add_global_token=False):
     """为ASR任务创建输入和标签，使用RWKV7ASRModel的格式"""
     from langdetect import detect, LangDetectException
     
@@ -56,6 +56,10 @@ def create_asr_inputs_and_labels(batch, tokenizer, eos_id=0, pad_id=0):
     
     for item in batch:
         semantic_tokens = item['semantic_tokens']
+        if add_global_token:
+            global_tokens = item['global_tokens']
+            global_tokens = [g+8192 for g in global_tokens]
+            semantic_tokens = semantic_tokens + global_tokens
         text = item['text']
         
         # 检测语言并选择对应的指令
@@ -257,6 +261,7 @@ def main():
     parser.add_argument("--max_k_tokens_per_batch", type=int, required=True, help="每个batch的最大token数")
     parser.add_argument("--gradient_clipping", type=float, default=0.5, help="梯度裁剪阈值")
     parser.add_argument("--full_params", action="store_true", help="使用全参数训练",default=False)
+    parser.add_argument("--add_global_token", action="store_true", help="添加全局token",default=False)
     
     args = parser.parse_args()
     
@@ -508,7 +513,7 @@ def main():
             
             # 创建输入和标签
             try:
-                audio_input_ids, text_input_ids, audio_attention_mask, text_attention_mask, labels, labels_attention_mask, hints_ids = create_asr_inputs_and_labels(batch, tokenizer)
+                audio_input_ids, text_input_ids, audio_attention_mask, text_attention_mask, labels, labels_attention_mask, hints_ids = create_asr_inputs_and_labels(batch, tokenizer,add_global_token=args.add_global_token)
                 input_size_per_sample = (audio_input_ids.shape[1] + text_input_ids.shape[1] + labels.shape[1])
                 current_k_tokens = input_size_per_sample* audio_input_ids.shape[0]
                 if current_k_tokens > args.max_k_tokens_per_batch * 1024:

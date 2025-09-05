@@ -43,8 +43,11 @@ def build_pinyin_dict():
 
 def get_random_chinese_char():
     """随机返回一个有效汉字（基于pypinyin能处理的字符）"""
+    global _all_chinese_chars
     if _all_chinese_chars is None:
-        build_pinyin_dict()
+        _all_chinese_chars = []
+        for code in range(0x4E00, 0x9FA5 ):  # 基本汉字Unicode范围
+            _all_chinese_chars.append(chr(code))
     return random.choice(_all_chinese_chars)
 
 def get_chars_by_tone3(pinyin_str, strict=True):
@@ -64,13 +67,6 @@ def get_random_eng_world():
         spell = SpellChecker()
         _word_list = list(spell.word_frequency.dictionary.keys())
     return random.choice(_word_list)
-def get_random_char_by_tone3(pinyin_str, strict=True):
-    """随机返回一个同音字"""
-    chars = get_chars_by_tone3(pinyin_str, strict)
-    if not chars:
-        warnings.warn(f"未找到拼音为 {pinyin_str} 的汉字")
-        return get_random_chinese_char()  # 失败时回退到随机汉字
-    return random.choice(chars)
 
 def get_jieba_tokenizer():
     global _jieba_tokenizer
@@ -112,6 +108,124 @@ def convert_to_ipa(text,lang='en'):
         return ipa.convert(text)
     elif lang == 'zh':
         return lazy_pinyin(text, style=Style.TONE3, neutral_tone_with_five=True)
+    else:
+        raise ValueError(f"Unsupported language: {lang}")
+
+def ramdomly_mark_phonem_natural_tagged(text, lang='en', min_mark=1, max_mark=None,wrong_word_ratio=0.5):
+    """
+    随机标记音标函数
+    :param text: 输入文本
+    :param lang: 语言类型 ('en' 或 'zh')
+    :param min_mark: 最少标记的单词数量，不能小于1
+    :param max_mark: 最多标记的单词数量，不能大于切分后单词总量
+    :return: 标记了音标的文本
+    """
+    if lang == 'en':
+        # 按空格分词
+        words = text.split()
+        if not words:
+            return text
+        
+        # 验证 min_mark 和 max_mark 参数
+        if min_mark < 1:
+            raise ValueError("min_mark 不能小于 1")
+        
+        if max_mark is None:
+            max_mark = len(words)
+        elif max_mark > len(words):
+            max_mark = len(words)
+        
+        if min_mark > max_mark:
+            raise ValueError(f"min_mark ({min_mark}) 不能大于 max_mark ({max_mark})")
+        
+        # 随机决定要标记的单词数量
+        mark_count = random.randint(min_mark, max_mark)
+        
+        # 随机选择要标记的单词索引
+        selected_indices = random.sample(range(len(words)), mark_count)
+        
+        # 对选中的单词进行标记（按词检测语言）
+        for index in selected_indices:
+            selected_word = words[index]
+            token_lang = detect_token_lang(selected_word)
+            ipa_result = convert_to_ipa_str(selected_word, token_lang)
+            if token_lang == 'zh':
+                #split word to characters
+                zh_chars = list(selected_word)
+                #ipa_result is already a list
+                if len(ipa_result) != len(zh_chars):
+                    words[index] = selected_word # For cases where the word is not split correctly
+                else:
+                    marked_word = ''
+                    for i in range(len(zh_chars)):
+                        if random.random() < wrong_word_ratio:
+                            wrong_char = get_random_chinese_char()
+                            marked_word += f"<mark>{wrong_char}||{ipa_result[i]}</mark>"
+                        else:
+                            marked_word += f"<mark>{zh_chars[i]}||{ipa_result[i]}</mark>"
+                    words[index] = marked_word
+            else:
+                if random.random() < wrong_word_ratio:
+                    wrong_word = get_random_eng_world()
+                    words[index] = f"<mark>{wrong_word}||{ipa_result}</mark>"
+                else:
+                    words[index] = f"<mark>{selected_word}||{ipa_result}</mark>"
+        
+        return ' '.join(words)
+    
+    elif lang == 'zh':
+        # 使用 jieba 分词（懒加载）
+        words = get_jieba_tokenizer().cut_text(text)
+        if not words:
+            return text
+        
+        # 验证 min_mark 和 max_mark 参数
+        if min_mark < 1:
+            raise ValueError("min_mark 不能小于 1")
+        
+        if max_mark is None:
+            max_mark = len(words)
+        elif max_mark > len(words):
+            max_mark = len(words)
+        
+        if min_mark > max_mark:
+            raise ValueError(f"min_mark ({min_mark}) 不能大于 max_mark ({max_mark})")
+        
+        # 随机决定要标记的单词数量
+        mark_count = random.randint(min_mark, max_mark)
+        
+        # 随机选择要标记的单词索引
+        selected_indices = random.sample(range(len(words)), mark_count)
+        
+        # 对选中的单词进行标记（按词检测语言）
+        for index in selected_indices:
+            selected_word = words[index]
+            token_lang = detect_token_lang(selected_word)
+            ipa_result = convert_to_ipa_str(selected_word, token_lang)
+            if token_lang == 'zh':
+                #split word to characters
+                zh_chars = list(selected_word)
+                #ipa_result is already a list
+                if len(ipa_result) != len(zh_chars):
+                    words[index] = selected_word # For cases where the word is not split correctly
+                else:
+                    marked_word = ''
+                    for i in range(len(zh_chars)):
+                        if random.random() < wrong_word_ratio:
+                            wrong_char = get_random_chinese_char()
+                            marked_word += f"<mark>{wrong_char}||{ipa_result[i]}</mark>"
+                        else:
+                            marked_word += f"<mark>{zh_chars[i]}||{ipa_result[i]}</mark>"
+                    words[index] = marked_word
+            else:
+                if random.random() < wrong_word_ratio:
+                    wrong_word = get_random_eng_world()
+                    words[index] = f"<mark>{wrong_word}||{ipa_result}</mark>"
+                else:
+                    words[index] = f"<mark>{selected_word}||{ipa_result}</mark>"
+        
+        return ''.join(words)
+    
     else:
         raise ValueError(f"Unsupported language: {lang}")
 

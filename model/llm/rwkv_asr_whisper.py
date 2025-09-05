@@ -256,11 +256,12 @@ class RWKV7ASRModel(nn.Module):
         
         # 2. 使用 whisper_feature_extractor 处理原始音频
         features = self.whisper_feature_extractor([audio_data], sampling_rate=16000, return_tensors="pt", return_attention_mask=True, padding_value=0.0)
-        audio_attention_mask = features['attention_mask'].squeeze(0)
+        audio_attention_mask = features['attention_mask']
         
         # 确保张量在正确的设备上
+        dtype = next(self.whisper_encoder.parameters()).dtype
         device = next(self.whisper_encoder.parameters()).device
-        input_features = features['input_features'].squeeze(0).to(dtype=torch.bfloat16).to(device)
+        input_features = features['input_features'].to(dtype=dtype).to(device)
         audio_attention_mask = audio_attention_mask.to(device)
         
         # 3. 通过 whisper_encoder 编码音频特征
@@ -308,10 +309,10 @@ class RWKV7ASRModel(nn.Module):
         gen_args = {
             "inputs_embeds": combined_embeds,
             "attention_mask": attention_mask,
-            "max_length": 512,
+            "max_new_tokens": 512,
             "temperature": 1.0,
             "top_k": 10,
-            "top_p": 0.8,
+            "top_p": 0.95,
             "do_sample": True,
             "eos_token_id": 0
         }

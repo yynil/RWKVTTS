@@ -176,12 +176,13 @@ class RWKV7ASRModel(nn.Module):
         gen_args = {
             "inputs_embeds": combined_embeds,
             "attention_mask": attention_mask,
-            "max_length": 512,
+            "max_new_tokens": 512,
             "temperature": 1.0,
             "top_k": 10,
             "top_p": 0.8,
             "do_sample": True,
-            "eos_token_id": 0
+            "eos_token_id": 0,
+            "max_length": 2048
         }
         output = self.llm.generate(**gen_args)
         return output[0][:-1].tolist()
