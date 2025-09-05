@@ -1,4 +1,5 @@
-from rwkvfla.models.rwkv7.modeling_rwkv7 import RWKV7Config, RWKV7Model
+from rwkvfla.models.rwkv7.modeling_rwkv7 import RWKV7Config
+from rwkv_asr_whisper import RWKV7ModelForLatentInputs
 from transformers.modeling_utils import _init_weights
 audio_config = {
         "a_low_rank_dim": 64,
@@ -22,14 +23,13 @@ audio_config = {
         "norm_first": True,
         "num_heads": 32,
         "num_hidden_layers": 12,
-        "tie_word_embeddings": False,
         "use_cache": True,
         "v_low_rank_dim": 32,
-        "vocab_size": 12288
+        "vocab_size": 10#we will ignore the vocab cause we don't have an embeddings layer
     }
 audio_config_obj = RWKV7Config(**audio_config)
 print("Initializing audio_lm_model...")
-audio_lm_model = RWKV7Model(audio_config_obj)
+audio_lm_model = RWKV7ModelForLatentInputs(audio_config_obj)
 print(audio_lm_model)
-audio_lm_model.save_pretrained("/home/yueyulin/models/rwkv7_0.1b_audio_lm_12k_vocab")
+audio_lm_model.save_pretrained("/home/yueyulin/models/rwkv7_0.1b_audio_lm_latents")
 print("audio_lm_model saved")

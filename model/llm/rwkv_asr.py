@@ -164,6 +164,27 @@ class RWKV7ASRModel(nn.Module):
         
         return output
 
+    @torch.inference_mode()
+    def inference_single(self, audio_tokens, text_tokens, hints_tokens):
+        audio_attention_mask = torch.ones((audio_tokens.shape[0], audio_tokens.shape[1]),dtype=torch.long).to(audio_tokens.device)
+        audio_latents = self.audio_lm_model(audio_tokens, audio_attention_mask, use_cache=False, return_dict=False)[0]  # [B, T_audio, hidden_size]
+        projected_latents = self.projector(audio_latents)  # [B, T_audio, hidden_size_of_llm]
+        text_input_embeds = self.llm.get_input_embeddings()(text_tokens)  # [B, T_text, hidden_size_of_llm]
+        hints_embeds = self.llm.get_input_embeddings()(hints_tokens)  # [B, T_hints, hidden_size_of_llm]
+        combined_embeds = torch.cat([text_input_embeds, projected_latents, hints_embeds], dim=1)  # [B, T_total, hidden_size_of_llm]
+        attention_mask = torch.ones((combined_embeds.shape[0], combined_embeds.shape[1]),dtype=torch.long).to(combined_embeds.device)
+        gen_args = {
+            "inputs_embeds": combined_embeds,
+            "attention_mask": attention_mask,
+            "max_length": 512,
+            "temperature": 1.0,
+            "top_k": 10,
+            "top_p": 0.8,
+            "do_sample": True,
+            "eos_token_id": 0
+        }
+        output = self.llm.generate(**gen_args)
+        return output[0][:-1].tolist()
 
 if __name__ == "__main__":
     llm_path = "/home/yueyulin/models/rwkv7-0.4B-g1"
