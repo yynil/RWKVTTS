@@ -14,6 +14,49 @@ import torch
 from typing import List, Dict, Any, Optional, Tuple
 from torch.utils.data import DataLoader
 
+def is_text_low_quality(text: str) -> bool:
+    """
+    检测文本是否低质量
+    如果字符串中功能符太多，如\t\n\r之类的，就返回 True
+    
+    Args:
+        text: 输入文本
+        
+    Returns:
+        bool: True 表示低质量文本，False 表示正常文本
+    """
+    if not text or not isinstance(text, str):
+        return True
+    
+    # 计算控制字符的数量
+    control_chars = ['\t', '\n', '\r', '\f', '\v']
+    control_count = sum(text.count(char) for char in control_chars)
+    
+    # 计算文本总长度
+    text_length = len(text)
+    
+    # 如果文本太短，认为是低质量
+    if text_length < 3:
+        return True
+    
+    # 如果控制字符占比超过20%，认为是低质量
+    if control_count / text_length > 0.2:
+        return True
+    
+    # 如果控制字符绝对数量超过10个，认为是低质量
+    if control_count > 10:
+        return True
+    
+    # 检查是否包含过多的连续制表符（可能是数据记录）
+    if '\t\t' in text and text.count('\t') > 5:
+        return True
+    
+    # 检查是否包含过多的连续换行符
+    if '\n\n' in text and text.count('\n') > 3:
+        return True
+    
+    return False
+
 
 def detect_language(text: str) -> str:
     """
@@ -105,7 +148,7 @@ def process_audio_sample(audio_data: bytes, target_sample_rate: int = 16000) -> 
     except Exception as e:
         print(f"处理音频失败: {e}")
         # 返回一个空的音频数组
-        return np.zeros((1, target_sample_rate)), target_sample_rate
+        return None, None
 
 
 def extract_text_label(sample: Dict[str, Any]) -> str:
@@ -229,6 +272,8 @@ def create_webdataset_pipeline(
         wds.tarfile_to_samples(),
         wds.map(lambda x: process_webdataset_sample(x, target_sample_rate)),
         wds.select(lambda x: x is not None),
+        wds.select(lambda x: x['wav'].shape[1] != target_sample_rate * 30),
+        wds.select(lambda x: not is_text_low_quality(x['text'])),
         wds.to_tuple("wav", "text", "format", "language", "sample_rate"),
     )
     dataloader = DataLoader(

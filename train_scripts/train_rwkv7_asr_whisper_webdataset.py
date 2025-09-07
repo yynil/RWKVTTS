@@ -430,12 +430,29 @@ def main():
     
     # 创建数据加载器迭代器
     
-    # 初始化训练状态
     sum_loss = 0
     all_tokens = 0
     iter_dataloader = iter(dataloader)
     if is_main_process:
         progress_bar = tqdm(total=args.all_training_steps, desc="Training")
+    print(f'start to warmup model...')
+    import numpy as np
+    first_batch = next(iter_dataloader)
+    first_audio_data, first_text_input_ids, first_text_attention_mask, first_labels, first_labels_attention_mask, first_hints_ids = create_asr_inputs_and_labels(
+                first_batch, tokenizer, eos_id=0, pad_id=0
+    )
+    first_text_input_ids = first_text_input_ids.to(device)
+    first_text_attention_mask = first_text_attention_mask.to(device)
+    first_labels = first_labels.to(device)
+    first_labels_attention_mask = first_labels_attention_mask.to(device)
+    first_hints_ids = first_hints_ids.to(device)
+    loss = train_step(model_engine, first_audio_data, first_text_input_ids, first_text_attention_mask, first_labels, first_labels_attention_mask, first_hints_ids)
+    print(f'loss: {loss}')
+    loss = 0.0 * loss
+    model_engine.backward(loss)
+    model_engine.step()
+    print(f'model warmed up')
+    # 初始化训练状态
     while global_step < args.all_training_steps:
         batch = next(iter_dataloader)
         if is_main_process and global_step % 100 == 0:
@@ -448,6 +465,7 @@ def main():
         audio_data, text_input_ids, text_attention_mask, labels, labels_attention_mask, hints_ids = create_asr_inputs_and_labels(
                 (wavs, texts, formats, languages, sample_rates), tokenizer, eos_id=0, pad_id=0
         )
+        
         
         # 更新学习率
         update_learning_rate(
@@ -465,9 +483,18 @@ def main():
         try:
             # 估算token数量（音频特征 + 文本）
             # 音频特征：每个音频样本大约1500帧（Whisper下采样后）
-            estimated_audio_tokens = len(audio_data) * 1500
+            #calculate the audio actual length
+            actual_length_of_audio = [0]
+            index = 0
+            for a in audio_data:
+                actual_length_of_audio.append(actual_length_of_audio[index] + a.shape[1])
+                index += 1
+            actual_length_of_audio = actual_length_of_audio[-1] / 16000
+            print(f"audio actual length: {actual_length_of_audio}")
+            estimated_audio_tokens = int(actual_length_of_audio) * 50
             text_tokens = text_input_ids.shape[0] * text_input_ids.shape[1]
-            current_k_tokens = (estimated_audio_tokens + text_tokens) / 1024
+            labels_tokens = labels.shape[0] * labels.shape[1]
+            current_k_tokens = (estimated_audio_tokens + text_tokens + labels_tokens) / 1024
             
             if current_k_tokens > args.max_k_tokens_per_batch:
                 print(f"当前batch的token数超过最大限制: {current_k_tokens:.2f}k > {args.max_k_tokens_per_batch}k")
@@ -490,89 +517,102 @@ def main():
                 print(f"数据处理失败: {e}")
                 print(f"问题batch: {batch}")
             continue
-        
-        # 移动到设备
-        text_input_ids = text_input_ids.to(device)
-        text_attention_mask = text_attention_mask.to(device)
-        labels = labels.to(device)
-        labels_attention_mask = labels_attention_mask.to(device)
-        hints_ids = hints_ids.to(device)
-        
-        # 前向传播和反向传播
-        loss = train_step(model_engine, audio_data, text_input_ids, text_attention_mask, labels, labels_attention_mask, hints_ids)
-        
-        # 检查loss是否为nan - 使用分布式同步
-        is_nan_or_inf = torch.isnan(loss) or torch.isinf(loss)
-        if torch.distributed.is_initialized():
-            # 在所有进程间同步nan状态
-            nan_tensor = torch.tensor(1 if is_nan_or_inf else 0, device=device, dtype=torch.long)
-            torch.distributed.all_reduce(nan_tensor, op=torch.distributed.ReduceOp.MAX)
-            should_skip = nan_tensor.item() > 0
-        else:
-            should_skip = is_nan_or_inf
-        
-        if should_skip:
-            if is_main_process:
-                print(f"Warning: NaN or Inf loss detected at step {global_step}, loss = {loss.item()}")
-                print("Skipping this step and resetting gradients...")
+        try:
+            # 移动到设备
+            text_input_ids = text_input_ids.to(device)
+            text_attention_mask = text_attention_mask.to(device)
+            labels = labels.to(device)
+            labels_attention_mask = labels_attention_mask.to(device)
+            hints_ids = hints_ids.to(device)
             
-            # 重置梯度，避免nan传播
-            model_engine.zero_grad()
-            continue
-        
-        sum_loss += loss.item()
-        avg_loss = sum_loss / (global_step + 1)
-        
-        # 反向传播
-        model_engine.backward(loss)
-        
-        # 计算梯度范数并监控
-        if global_step % 100 == 0:
-            grad_norm = compute_gradient_norm(model_engine)
+            # 前向传播和反向传播
+            
+            loss = train_step(model_engine, audio_data, text_input_ids, text_attention_mask, labels, labels_attention_mask, hints_ids)
+            
+            # 检查loss是否为nan - 使用分布式同步
+            is_nan_or_inf = torch.isnan(loss) or torch.isinf(loss)
             if torch.distributed.is_initialized():
-                # 在所有进程间同步梯度范数
-                grad_norm_tensor = torch.tensor(grad_norm, device=device, dtype=torch.float)
-                torch.distributed.all_reduce(grad_norm_tensor, op=torch.distributed.ReduceOp.MAX)
-                grad_norm = grad_norm_tensor.item()
+                # 在所有进程间同步nan状态
+                nan_tensor = torch.tensor(1 if is_nan_or_inf else 0, device=device, dtype=torch.long)
+                torch.distributed.all_reduce(nan_tensor, op=torch.distributed.ReduceOp.MAX)
+                should_skip = nan_tensor.item() > 0
+            else:
+                should_skip = is_nan_or_inf
             
+            if should_skip:
+                if is_main_process:
+                    print(f"Warning: NaN or Inf loss detected at step {global_step}, loss = {loss.item()}")
+                    print("Skipping this step and resetting gradients...")
+                
+                # 重置梯度，避免nan传播
+                model_engine.zero_grad()
+                continue
+            
+            sum_loss += loss.item()
+            avg_loss = sum_loss / (global_step + 1)
+            
+            # 反向传播
+            model_engine.backward(loss)
+            
+            # 计算梯度范数并监控
+            # if global_step % 100 == 0:
+            #     grad_norm = compute_gradient_norm(model_engine)
+            #     if torch.distributed.is_initialized():
+            #         # 在所有进程间同步梯度范数
+            #         grad_norm_tensor = torch.tensor(grad_norm, device=device, dtype=torch.float)
+            #         torch.distributed.all_reduce(grad_norm_tensor, op=torch.distributed.ReduceOp.MAX)
+            #         grad_norm = grad_norm_tensor.item()
+                
+            #     if is_main_process:
+            #         print(f"Step {global_step}: Gradient norm = {grad_norm:.4f}")
+            #         # 如果梯度范数过大，给出警告
+            #         if grad_norm > 10.0:
+            #             print(f"Warning: Large gradient norm detected: {grad_norm:.4f}")
+            
+            model_engine.step()
+            
+            # 计算总 tokens（包括音频和文本）
+            text_tokens = text_input_ids.shape[0] * text_input_ids.shape[1] * world_size
+            all_tokens += text_tokens
+            
+            # 获取当前学习率
+            current_lr = optimizer.param_groups[0]['lr']
+            
+            # 记录指标（每一步都记录）
+            log_metrics(wandb, global_step, loss.item(), avg_loss, current_lr, all_tokens, is_main_process)
+            
+            # 更新进度条
             if is_main_process:
-                print(f"Step {global_step}: Gradient norm = {grad_norm:.4f}")
-                # 如果梯度范数过大，给出警告
-                if grad_norm > 10.0:
-                    print(f"Warning: Large gradient norm detected: {grad_norm:.4f}")
-        
-        model_engine.step()
-        
-        # 计算总 tokens（包括音频和文本）
-        text_tokens = text_input_ids.shape[0] * text_input_ids.shape[1] * world_size
-        all_tokens += text_tokens
-        
-        # 获取当前学习率
-        current_lr = optimizer.param_groups[0]['lr']
-        
-        # 记录指标（每一步都记录）
-        log_metrics(wandb, global_step, loss.item(), avg_loss, current_lr, all_tokens, is_main_process)
-        
-        # 更新进度条
-        if is_main_process:
-            progress_bar.set_postfix({
-                "loss": f"{loss.item():.4f}", 
-                "avg_loss": f"{avg_loss:.4f}",
-                "lr": f"{current_lr:.2e}",
-                "grad_clip": f"{args.gradient_clipping}"
-            })
-        
-        # 保存checkpoint
-        if global_step > 0 and global_step % args.save_steps == 0:
-            training_state = get_training_state(model_engine, global_step, 0, all_tokens)  # epoch设为0
-            save_checkpoint(model_engine, args.output_dir, 0, global_step, training_state, logger)
-        
-        global_step += 1
-        # step += 1 # This line was removed as per the new_code, as step is no longer incremented here.
-        
-        # 更新进度条
-        if is_main_process:
-            progress_bar.update(1)
+                progress_bar.set_postfix({
+                    "loss": f"{loss.item():.4f}", 
+                    "avg_loss": f"{avg_loss:.4f}",
+                    "lr": f"{current_lr:.2e}",
+                    "grad_clip": f"{args.gradient_clipping}",
+                    "audio_actual_length": f"{actual_length_of_audio:.2f}"
+                })
+            
+            # 保存checkpoint
+            if global_step > 0 and global_step % args.save_steps == 0:
+                training_state = get_training_state(model_engine, global_step, 0, all_tokens)  # epoch设为0
+                save_checkpoint(model_engine, args.output_dir, 0, global_step, training_state, logger)
+            
+            global_step += 1
+            # step += 1 # This line was removed as per the new_code, as step is no longer incremented here.
+            
+            # 更新进度条
+            if is_main_process:
+                progress_bar.update(1)
+        except Exception as e:
+            print(f"问题batch: {batch}")
+            print(f"训练失败: {e}")
+            print(f'use a dummy batch to recover...')
+            torch.cuda.empty_cache()
+            loss = train_step(model_engine, first_audio_data, first_text_input_ids, first_text_attention_mask, first_labels, first_labels_attention_mask, first_hints_ids)
+            print(f'loss: {loss}')
+            loss = 0.0 * loss
+            model_engine.backward(loss)
+            model_engine.step()
+            continue
     
     # 关闭进度条
     if is_main_process:
