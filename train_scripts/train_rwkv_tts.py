@@ -135,6 +135,11 @@ class ScriptArguments:
         metadata={"help": "Gradient clipping threshold"}
     )
 
+    ckpt_file : Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to model checkpoint file"}
+    )
+
 def setup_logging(local_rank):
     """Configure logging"""
     if local_rank <= 0:
@@ -414,6 +419,13 @@ def main():
     if is_main_process:
         logger.info("Creating TTS model")
     model = RWKV7TTSModel(text_model, audio_model)
+    
+    if args.ckpt_file is not None:
+        if is_main_process:
+            logger.info(f"Loading checkpoint from {args.ckpt_file}")
+        info = model.load_state_dict(torch.load(args.ckpt_file))
+        if is_main_process:
+            logger.info(f"Loaded checkpoint info: {info}")
     
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
