@@ -165,7 +165,7 @@ class RWKV7ASRModel(nn.Module):
         for i in range(batch_size):
             # 获取当前样本的有效长度
             # 关键修复：将原始attention mask计算的长度除以下采样比例
-            audio_valid_length = int(audio_valid_lengths[i].item() / downsample_ratio)
+            audio_valid_length = int(audio_valid_lengths[i].item() / downsample_ratio)+1
             text_valid_length = text_valid_lengths[i].item()
             labels_valid_length = labels_valid_lengths[i].item() if labels_attention_mask is not None else 0
             
@@ -282,7 +282,7 @@ class RWKV7ASRModel(nn.Module):
             downsample_ratio = 1.0
         
         # 获取有效音频长度（考虑下采样）
-        audio_valid_length = int(audio_attention_mask.sum().item() / downsample_ratio)
+        audio_valid_length = int(audio_attention_mask.sum().item() / downsample_ratio)+1
         
         # 获取有效的音频嵌入（右padding，有效元素在左边）
         if audio_valid_length > 0:
