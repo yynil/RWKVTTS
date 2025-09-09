@@ -181,11 +181,12 @@ def save_checkpoint(model_engine, output_dir, epoch, step, training_state, logge
         torch.save(training_state, client_state_file)
         print(f"额外保存训练状态到: {client_state_file}")
 
-def log_metrics(wandb, global_step, loss, avg_loss, learning_rate, all_tokens, is_main_process):
+def log_metrics(wandb, global_step, loss, avg_loss, learning_rate, all_tokens, epoch, is_main_process):
     """记录训练指标到wandb"""
     if is_main_process:
         wandb.log({
             "step": global_step,
+            "epoch": epoch,
             "loss": loss,
             "avg_loss": avg_loss,
             "learning_rate": learning_rate,
@@ -303,13 +304,13 @@ def main():
         print("初始化全局预编码变量...")
     
     # 预定义的中英文指令
-    chinese_instruction = "User: 把以下音频转写为中文。\n"
+    chinese_instruction = "User: 请将以下语音转写为中文。\n"
     english_instruction = "User: Convert the audios to English.\n"
     # 预编码指令
     global _global_text_input_ids_chinese, _global_text_input_ids_english, _global_hints_ids
     _global_text_input_ids_chinese = torch.tensor(tokenizer.encode(chinese_instruction), dtype=torch.long)
     _global_text_input_ids_english = torch.tensor(tokenizer.encode(english_instruction), dtype=torch.long)
-    _global_hints_ids = torch.tensor(tokenizer.encode("\nAssistant:"), dtype=torch.long)
+    _global_hints_ids = torch.tensor(tokenizer.encode("Assistant: "), dtype=torch.long)
     
     if is_main_process:
         print(f"中文指令长度: {len(_global_text_input_ids_chinese)}")
@@ -424,9 +425,6 @@ def main():
         print(f"开始训练循环，总训练步数: {args.all_training_steps}")
 
     
-    # 用于检测数据重复的缓存
-    batch_cache = {}
-    duplicate_count = 0
     
     # 创建数据加载器迭代器
     
@@ -453,10 +451,21 @@ def main():
     model_engine.step()
     print(f'model warmed up')
     # 初始化训练状态
+    epoch = 0
     while global_step < args.all_training_steps:
-        batch = next(iter_dataloader)
-        if is_main_process and global_step % 100 == 0:
-            print(f"Global Step {global_step}, batch: \n{batch}")
+        try:
+            batch = next(iter_dataloader)
+        except StopIteration:
+            # 数据遍历完毕，重新创建迭代器开始新的epoch
+            if is_main_process:
+                print(f"Epoch {epoch} 完成，重新开始数据遍历...")
+            epoch += 1
+            iter_dataloader = iter(dataloader)
+            batch = next(iter_dataloader)
+            if is_main_process:
+                print(f"开始 Epoch {epoch}")
+        if global_step % 100 == 0:
+            print(f"Rank {global_rank} Global Step {global_step}, batch: \n{batch}")
 
         wavs, texts, formats, languages, sample_rates = batch
 
@@ -529,46 +538,14 @@ def main():
             
             loss = train_step(model_engine, audio_data, text_input_ids, text_attention_mask, labels, labels_attention_mask, hints_ids)
             
-            # 检查loss是否为nan - 使用分布式同步
-            is_nan_or_inf = torch.isnan(loss) or torch.isinf(loss)
-            if torch.distributed.is_initialized():
-                # 在所有进程间同步nan状态
-                nan_tensor = torch.tensor(1 if is_nan_or_inf else 0, device=device, dtype=torch.long)
-                torch.distributed.all_reduce(nan_tensor, op=torch.distributed.ReduceOp.MAX)
-                should_skip = nan_tensor.item() > 0
-            else:
-                should_skip = is_nan_or_inf
-            
-            if should_skip:
-                if is_main_process:
-                    print(f"Warning: NaN or Inf loss detected at step {global_step}, loss = {loss.item()}")
-                    print("Skipping this step and resetting gradients...")
-                
-                # 重置梯度，避免nan传播
-                model_engine.zero_grad()
-                continue
+
             
             sum_loss += loss.item()
             avg_loss = sum_loss / (global_step + 1)
             
             # 反向传播
             model_engine.backward(loss)
-            
-            # 计算梯度范数并监控
-            # if global_step % 100 == 0:
-            #     grad_norm = compute_gradient_norm(model_engine)
-            #     if torch.distributed.is_initialized():
-            #         # 在所有进程间同步梯度范数
-            #         grad_norm_tensor = torch.tensor(grad_norm, device=device, dtype=torch.float)
-            #         torch.distributed.all_reduce(grad_norm_tensor, op=torch.distributed.ReduceOp.MAX)
-            #         grad_norm = grad_norm_tensor.item()
-                
-            #     if is_main_process:
-            #         print(f"Step {global_step}: Gradient norm = {grad_norm:.4f}")
-            #         # 如果梯度范数过大，给出警告
-            #         if grad_norm > 10.0:
-            #             print(f"Warning: Large gradient norm detected: {grad_norm:.4f}")
-            
+
             model_engine.step()
             
             # 计算总 tokens（包括音频和文本）
@@ -579,11 +556,12 @@ def main():
             current_lr = optimizer.param_groups[0]['lr']
             
             # 记录指标（每一步都记录）
-            log_metrics(wandb, global_step, loss.item(), avg_loss, current_lr, all_tokens, is_main_process)
+            log_metrics(wandb, global_step, loss.item(), avg_loss, current_lr, all_tokens, epoch, is_main_process)
             
             # 更新进度条
             if is_main_process:
                 progress_bar.set_postfix({
+                    "epoch": epoch,
                     "loss": f"{loss.item():.4f}", 
                     "avg_loss": f"{avg_loss:.4f}",
                     "lr": f"{current_lr:.2e}",
@@ -593,8 +571,8 @@ def main():
             
             # 保存checkpoint
             if global_step > 0 and global_step % args.save_steps == 0:
-                training_state = get_training_state(model_engine, global_step, 0, all_tokens)  # epoch设为0
-                save_checkpoint(model_engine, args.output_dir, 0, global_step, training_state, logger)
+                training_state = get_training_state(model_engine, global_step, epoch, all_tokens)
+                save_checkpoint(model_engine, args.output_dir, epoch, global_step, training_state, logger)
             
             global_step += 1
             # step += 1 # This line was removed as per the new_code, as step is no longer incremented here.
