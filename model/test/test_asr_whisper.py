@@ -25,6 +25,7 @@ def generate_single_sample(audio_lm_path, llm_path, ckpt_path, language, device,
     print(asr_model)
     tokenizer = AutoTokenizer.from_pretrained(llm_path,trust_remote_code=True)
     print(tokenizer)
+    
     if language == 'chinese':
         print(f'language: {language}')
         instruction = "User: 请将以下语音转写为中文。\n"

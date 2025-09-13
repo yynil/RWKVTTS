@@ -80,16 +80,16 @@ class RWKV7ASRModel(nn.Module):
                 list_of_audio.append(audio)
         
         features = self.whisper_feature_extractor(list_of_audio, sampling_rate=16000, return_tensors="pt", return_attention_mask=True, padding_value=0.0)
-        audio_attention_mask = features['attention_mask'].squeeze(0)
+        audio_attention_mask = features['attention_mask']
         
         # 确保张量在正确的设备上
         device = next(self.whisper_encoder.parameters()).device
-        input_features = features['input_features'].squeeze(0).to(dtype=torch.bfloat16).to(device)
+        input_features = features['input_features'].to(dtype=torch.bfloat16).to(device)
         audio_attention_mask = audio_attention_mask.to(device)
         
         # 2. 通过 whisper_encoder 编码音频特征
         with torch.no_grad():
-            encoder_outputs = self.whisper_encoder(input_features, attention_mask=audio_attention_mask)
+            encoder_outputs = self.whisper_encoder(input_features)
         
         audio_latents = encoder_outputs.last_hidden_state  # [B, T_audio, hidden_size]
         projected_latents = self.projector1(audio_latents)  # [B, T_audio, hidden_size_of_llm]

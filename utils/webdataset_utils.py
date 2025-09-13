@@ -267,7 +267,7 @@ def create_webdataset_pipeline(
     # 创建WebDataset，添加empty_check=False避免空数据集错误
     dataset = wds.DataPipeline(
         wds.SimpleShardList(data_files,seed=True),
-        wds.shuffle(1000),
+        wds.shuffle(100000),
         wds.split_by_worker,
         wds.tarfile_to_samples(),
         wds.map(lambda x: process_webdataset_sample(x, target_sample_rate)),

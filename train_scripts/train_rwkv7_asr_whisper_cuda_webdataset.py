@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-基于RWKV7ASRModel (Whisper版本) 的ASR训练脚本
+基于RWKV7ASRModelCuda (Whisper版本) 的ASR训练脚本
 使用webdataset数据，冻结Whisper组件，只训练LLM和projector
 """
 
@@ -20,12 +20,11 @@ from pathlib import Path
 # 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from model.llm.rwkv_asr_whisper import RWKV7ASRModel, load_whisper_feature_extractor_and_encoder,RWKV7ModelForLatentInputs
-from rwkvfla.models.rwkv7.modeling_rwkv7 import RWKV7Config, RWKV7ForCausalLM
-from tokenizer.rwkv_tokenizer import RWKV_TOKENIZER
+from model.llm.rwkv_asr_cuda_whisper import RWKV7ASRModelCuda, load_whisper_feature_extractor_and_encoder, RWKV7ModelForLatentInputsCuda, RWKV7ModelForCausalLMCuda
+from rwkv.rwkv_tokenizer import TRIE_TOKENIZER
 from utils.webdataset_utils import create_complete_pipeline, process_batch
+from utils.rwkv_utilities import parser_config_from_checkpoint
 
-from rwkvfla.modules.l2warp import l2_warp
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -35,7 +34,7 @@ _global_text_input_ids_english = None
 _global_hints_ids = None
 
 def create_asr_inputs_and_labels(batch, tokenizer, eos_id=0, pad_id=0):
-    """为ASR任务创建输入和标签，使用Whisper版本的RWKV7ASRModel格式"""
+    """为ASR任务创建输入和标签，使用Whisper版本的RWKV7ASRModelCuda格式"""
     
     # 从webdataset_utils返回的batch格式：
     # batch = (wavs, texts, formats, languages, sample_rates)
@@ -93,10 +92,10 @@ def configure_optimizer(model, args):
             continue
         
         # 注意力相关参数使用2倍学习率
-        if "attn.w_lora.lora.2.bias" in n:
+        if "att.w0" in n:
             lr_2x.add(n)
         # 权重参数使用权重衰减
-        elif (len(p.squeeze().shape) >= 2) and (args.weight_decay > 0) and (".weight" in n) and ("lora" not in n):
+        elif (len(p.squeeze().shape) >= 2) and (args.weight_decay > 0) and (".weight" in n):
             lr_decay.add(n)
         else:
             lr_1x.add(n)
@@ -105,8 +104,6 @@ def configure_optimizer(model, args):
     lr_2x = sorted(list(lr_2x))
     lr_decay = sorted(list(lr_decay))
     param_dict = {n: p for n, p in model.named_parameters()}
-    
-
     
     optim_groups = [
         {"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0, "name": "lr_1x"},
@@ -201,13 +198,49 @@ def get_training_state(model_engine, global_step, epoch, all_tokens):
         "all_tokens": all_tokens,
     }
 
+def load_model_from_checkpoint_dir(checkpoint_dir, device):
+    """从checkpoint目录加载模型组件"""
+    
+    # 加载LLM参数
+    llm_args_path = os.path.join(checkpoint_dir, 'llm_args.json')
+    with open(llm_args_path, 'r') as f:
+        llm_args_dict = json.load(f)
+    
+    # 创建Namespace对象
+    from argparse import Namespace
+    llm_args = Namespace(**llm_args_dict)
+    
+    # 加载LLM模型
+    llm = RWKV7ModelForCausalLMCuda(llm_args)
+    llm_ckpt_path = os.path.join(checkpoint_dir, 'llm_state_dict.pt')
+    llm.load_state_dict(torch.load(llm_ckpt_path, map_location='cpu'))
+    llm = llm.to(device)
+    
+    # 加载音频LM参数
+    audio_lm_args_path = os.path.join(checkpoint_dir, 'audio_lm_args.json')
+    with open(audio_lm_args_path, 'r') as f:
+        audio_lm_args_dict = json.load(f)
+    
+    audio_lm_args = Namespace(**audio_lm_args_dict)
+    
+    # 加载音频LM模型
+    audio_lm_model = RWKV7ModelForLatentInputsCuda(audio_lm_args)
+    audio_lm_ckpt_path = os.path.join(checkpoint_dir, 'audio_lm_state_dict.pt')
+    audio_lm_model.load_state_dict(torch.load(audio_lm_ckpt_path, map_location='cpu'))
+    audio_lm_model = audio_lm_model.to(device)
+    
+    # 加载Whisper组件
+    whisper_encoder_path = os.path.join(checkpoint_dir, 'whisper_encoder')
+    whisper_feature_extractor, whisper_encoder = load_whisper_feature_extractor_and_encoder(whisper_encoder_path)
+    whisper_encoder = whisper_encoder.to(device)
+    
+    return whisper_feature_extractor, whisper_encoder, audio_lm_model, llm
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--whisper_path", type=str, required=True, help="Whisper模型目录路径")
-    parser.add_argument("--llm_model_path", type=str, required=True, help="LLM模型目录路径")
-    parser.add_argument("--audio_lm_model_path", type=str, required=True, help="音频LM模型目录路径")
+    parser.add_argument("--checkpoint_dir", type=str, default="/home/yueyulin/rwkv7_whisper_cuda", help="模型checkpoint目录路径")
     parser.add_argument("--data_dir", type=str, required=True, help="webdataset数据目录")
-    parser.add_argument("--output_dir", type=str, default="outputs/rwkv7_asr_whisper", help="输出目录")
+    parser.add_argument("--output_dir", type=str, default="outputs/rwkv7_asr_whisper_cuda", help="输出目录")
     parser.add_argument("--per_device_train_batch_size", type=int, default=2, help="每个设备的训练批次大小")
     parser.add_argument("--learning_rate", type=float, default=5e-5, help="学习率")
     parser.add_argument("--learning_rate_final", type=float, default=1e-5, help="最终学习率")
@@ -242,23 +275,18 @@ def main():
         print(f"DeepSpeed初始化完成，world_size={world_size}, local_rank={args.local_rank}")
         print(f"使用设备: {device}")
     
-    # 加载Whisper模型和特征提取器
+    # 从checkpoint目录加载模型组件
     if is_main_process:
-        print(f"加载Whisper模型: {args.whisper_path}")
-    whisper_feature_extractor, whisper_encoder = load_whisper_feature_extractor_and_encoder(args.whisper_path)
+        print(f"从checkpoint目录加载模型: {args.checkpoint_dir}")
     
-    # 加载LLM模型
-    if is_main_process:
-        print(f"加载LLM模型: {args.llm_model_path}")
-    audio_lm_model = RWKV7ModelForLatentInputs.from_pretrained(args.audio_lm_model_path, trust_remote_code=True)
-    llm = RWKV7ForCausalLM.from_pretrained(args.llm_model_path, trust_remote_code=True)
+    whisper_feature_extractor, whisper_encoder, audio_lm_model, llm = load_model_from_checkpoint_dir(args.checkpoint_dir, device)
     
     # 创建ASR模型
     if is_main_process:
         print("创建ASR模型...")
-    model = RWKV7ASRModel(whisper_encoder,audio_lm_model, llm, whisper_feature_extractor)
+    model = RWKV7ASRModelCuda(whisper_encoder, audio_lm_model, llm, whisper_feature_extractor)
     if args.gradient_checkpointing:
-        model.audio_lm_model.gradient_checkpointing_enable()
+        model.audio_lm_model.args.grad_cp = 1
     model.whisper_encoder.eval()
     model.llm.eval()
     # 冻结Whisper相关参数
@@ -293,11 +321,9 @@ def main():
     start_epoch = 0
     
     # 加载tokenizer
-    vocab_file = os.path.join(args.llm_model_path, "rwkv_vocab_enlarged.txt")
-    if not os.path.exists(vocab_file):
-        vocab_file = "tokenizer/rwkv_vocab_v20230424.txt"
+    vocab_file = os.path.join(args.checkpoint_dir, "rwkv_vocab_v20230424.txt")
     
-    tokenizer = RWKV_TOKENIZER(vocab_file)
+    tokenizer = TRIE_TOKENIZER(vocab_file)
     
     # 初始化全局预编码变量
     if is_main_process:
@@ -418,38 +444,18 @@ def main():
     
     # 初始化wandb
     if is_main_process:
-        wandb.init(project="rwkv7-asr-whisper", name="whisper-asr-training")
+        wandb.init(project="rwkv7-asr-whisper-cuda", name="whisper-asr-cuda-training")
     
     # 训练循环
     if is_main_process:
         print(f"开始训练循环，总训练步数: {args.all_training_steps}")
 
-    
-    
     # 创建数据加载器迭代器
-    
     sum_loss = 0
     all_tokens = 0
     iter_dataloader = iter(dataloader)
     if is_main_process:
         progress_bar = tqdm(total=args.all_training_steps, desc="Training")
-    print(f'start to warmup model...')
-    import numpy as np
-    first_batch = next(iter_dataloader)
-    first_audio_data, first_text_input_ids, first_text_attention_mask, first_labels, first_labels_attention_mask, first_hints_ids = create_asr_inputs_and_labels(
-                first_batch, tokenizer, eos_id=0, pad_id=0
-    )
-    first_text_input_ids = first_text_input_ids.to(device)
-    first_text_attention_mask = first_text_attention_mask.to(device)
-    first_labels = first_labels.to(device)
-    first_labels_attention_mask = first_labels_attention_mask.to(device)
-    first_hints_ids = first_hints_ids.to(device)
-    loss = train_step(model_engine, first_audio_data, first_text_input_ids, first_text_attention_mask, first_labels, first_labels_attention_mask, first_hints_ids)
-    print(f'loss: {loss}')
-    loss = 0.0 * loss
-    model_engine.backward(loss)
-    model_engine.step()
-    print(f'model warmed up')
     # 初始化训练状态
     epoch = 0
     while global_step < args.all_training_steps:
@@ -469,12 +475,10 @@ def main():
 
         wavs, texts, formats, languages, sample_rates = batch
 
-        
         # 处理数据
         audio_data, text_input_ids, text_attention_mask, labels, labels_attention_mask, hints_ids = create_asr_inputs_and_labels(
                 (wavs, texts, formats, languages, sample_rates), tokenizer, eos_id=0, pad_id=0
         )
-        
         
         # 更新学习率
         update_learning_rate(
@@ -535,10 +539,7 @@ def main():
             hints_ids = hints_ids.to(device)
             
             # 前向传播和反向传播
-            
             loss = train_step(model_engine, audio_data, text_input_ids, text_attention_mask, labels, labels_attention_mask, hints_ids)
-            
-
             
             sum_loss += loss.item()
             avg_loss = sum_loss / (global_step + 1)
@@ -575,20 +576,17 @@ def main():
                 save_checkpoint(model_engine, args.output_dir, epoch, global_step, training_state, logger)
             
             global_step += 1
-            # step += 1 # This line was removed as per the new_code, as step is no longer incremented here.
             
             # 更新进度条
             if is_main_process:
                 progress_bar.update(1)
+            
+            torch.cuda.empty_cache()
         except Exception as e:
             print(f"问题batch: {batch}")
             print(f"训练失败: {e}")
             print(f'use a dummy batch to recover...')
             torch.cuda.empty_cache()
-            loss = train_step(model_engine, first_audio_data, first_text_input_ids, first_text_attention_mask, first_labels, first_labels_attention_mask, first_hints_ids)
-            print(f'loss: {loss}')
-            loss = 0.0 * loss
-            model_engine.backward(loss)
             model_engine.step()
             continue
     
