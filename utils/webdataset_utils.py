@@ -9,10 +9,12 @@ import re
 import io
 import numpy as np
 import soundfile as sf
+import librosa
 import webdataset as wds
 import torch
 from typing import List, Dict, Any, Optional, Tuple
 from torch.utils.data import DataLoader
+from webdataset.handlers import warn_and_continue
 
 def is_text_low_quality(text: str) -> bool:
     """
@@ -112,11 +114,9 @@ def process_audio_sample(audio_data: bytes, target_sample_rate: int = 16000) -> 
         audio_buffer = io.BytesIO(audio_data)
         audio_array, sample_rate = sf.read(audio_buffer)
         
-        # 确保是2D数组 [channels, samples]
+
         if audio_array.ndim == 1:
             audio_array = audio_array.reshape(1, -1)
-        elif audio_array.ndim > 2:
-            audio_array = audio_array.reshape(audio_array.shape[0], -1)
         
         # 转换为单声道
         if audio_array.shape[0] > 1:
@@ -124,18 +124,13 @@ def process_audio_sample(audio_data: bytes, target_sample_rate: int = 16000) -> 
         
         # 重采样到目标采样率
         if sample_rate != target_sample_rate:
-            # 简单的重采样实现
-            if sample_rate > target_sample_rate:
-                # 降采样：简单取平均
-                ratio = sample_rate // target_sample_rate
-                if ratio > 1:
-                    audio_array = audio_array.reshape(audio_array.shape[0], -1, ratio)
-                    audio_array = np.mean(audio_array, axis=2)
-            else:
-                # 升采样：简单重复
-                ratio = target_sample_rate // sample_rate
-                audio_array = np.repeat(audio_array, ratio, axis=1)
-            
+            # 使用librosa进行高质量重采样
+            # 此时audio_array已经是单声道，直接重采样即可
+            audio_array = librosa.resample(
+                audio_array[0], 
+                orig_sr=sample_rate, 
+                target_sr=target_sample_rate
+            ).reshape(1, -1)
             sample_rate = target_sample_rate
         
         # 限制音频长度（30秒）
@@ -147,7 +142,6 @@ def process_audio_sample(audio_data: bytes, target_sample_rate: int = 16000) -> 
         
     except Exception as e:
         print(f"处理音频失败: {e}")
-        # 返回一个空的音频数组
         return None, None
 
 
@@ -191,7 +185,7 @@ def extract_text_label(sample: Dict[str, Any]) -> str:
 
 def process_webdataset_sample(sample: Dict[str, Any], target_sample_rate: int = 16000) -> Optional[Dict[str, Any]]:
     """
-    处理 WebDataset 单个样本
+    处理 WebDataset 单个样本，具有robust的错误处理
     
     Args:
         sample: WebDataset 样本
@@ -200,25 +194,37 @@ def process_webdataset_sample(sample: Dict[str, Any], target_sample_rate: int = 
     Returns:
         Optional[Dict]: 处理后的样本，如果失败返回 None
     """
-    # 查找音频文件
-    audio_data = None
-    audio_format = None
-    
-    for format_name in ['wav', 'mp3', 'flac']:
-        if format_name in sample:
-            audio_data = sample[format_name]
-            audio_format = format_name
-            break
-    
-    if audio_data is None:
-        return None
-    
     try:
+        # 检查样本是否有效
+        if not sample or not isinstance(sample, dict):
+            return None
+            
+        # 查找音频文件
+        audio_data = None
+        audio_format = None
+        
+        for format_name in ['wav', 'mp3', 'flac']:
+            if format_name in sample and sample[format_name] is not None:
+                audio_data = sample[format_name]
+                audio_format = format_name
+                break
+        
+        if audio_data is None:
+            return None
+        
         # 处理音频
         audio_array, sample_rate = process_audio_sample(audio_data, target_sample_rate)
         
+        # 检查音频处理结果
+        if audio_array is None or sample_rate is None:
+            return None
+            
         # 提取文本标签
         text_label = extract_text_label(sample)
+        
+        # 检查文本是否有效
+        if not text_label or text_label == "unknown":
+            return None
         
         # 检测语言
         language = detect_language(text_label)
@@ -264,14 +270,15 @@ def create_webdataset_pipeline(
     print(f"创建WebDataset管道: {data_files} 个文件, world_size={world_size}, global_rank={global_rank}")
 
     
-    # 创建WebDataset，添加empty_check=False避免空数据集错误
+    # 创建WebDataset，添加错误处理机制
     dataset = wds.DataPipeline(
         wds.SimpleShardList(data_files,seed=True),
+        wds.resampled,  # 重新添加resampled，确保数据无限循环
         wds.shuffle(100000),
         wds.split_by_worker,
-        wds.tarfile_to_samples(),
-        wds.map(lambda x: process_webdataset_sample(x, target_sample_rate)),
-        wds.select(lambda x: x is not None),
+        wds.tarfile_to_samples(handler=warn_and_continue),
+        wds.map(lambda x: process_webdataset_sample(x, target_sample_rate), handler=warn_and_continue),  # 添加错误处理
+        wds.select(lambda x: x is not None and x['wav'] is not None and x['text'] is not None),
         wds.select(lambda x: x['wav'].shape[1] != target_sample_rate * 30),
         wds.select(lambda x: not is_text_low_quality(x['text'])),
         wds.to_tuple("wav", "text", "format", "language", "sample_rate"),

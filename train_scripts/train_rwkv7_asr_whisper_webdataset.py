@@ -221,6 +221,7 @@ def main():
     parser.add_argument("--ds_optimizer_offload", action="store_true", help="启用DeepSpeed优化器CPU卸载")
     parser.add_argument("--local_rank", type=int, default=-1)
     parser.add_argument("--max_k_tokens_per_batch", type=int, required=True, help="每个batch的最大token数")
+    parser.add_argument("--max_actual_seconds_of_batch", type=float, default=350, help="数据加载器使用的最大实际秒数")
     parser.add_argument("--all_training_steps", type=int, default=1000000, help="总训练步数，WebDataset流式训练使用")
     parser.add_argument("--gradient_clipping", type=float, default=0.5, help="梯度裁剪阈值")
     
@@ -495,28 +496,24 @@ def main():
             #calculate the audio actual length
             actual_length_of_audio = [0]
             index = 0
+            max_bs_size = -1
+            kept_audio_seconds = 0
             for a in audio_data:
-                actual_length_of_audio.append(actual_length_of_audio[index] + a.shape[1])
+                actual_length_of_audio.append(actual_length_of_audio[-1] + a.shape[1]/ 16000.0)
+                if actual_length_of_audio[-1] > args.max_actual_seconds_of_batch and max_bs_size == -1:
+                    max_bs_size = index 
+                    kept_audio_seconds = actual_length_of_audio[index]
                 index += 1
-            actual_length_of_audio = actual_length_of_audio[-1] / 16000
+            actual_length_of_audio = actual_length_of_audio[-1]
             print(f"audio actual length: {actual_length_of_audio}")
-            estimated_audio_tokens = int(actual_length_of_audio) * 50
-            text_tokens = text_input_ids.shape[0] * text_input_ids.shape[1]
-            labels_tokens = labels.shape[0] * labels.shape[1]
-            current_k_tokens = (estimated_audio_tokens + text_tokens + labels_tokens) / 1024
-            
-            if current_k_tokens > args.max_k_tokens_per_batch:
-                print(f"当前batch的token数超过最大限制: {current_k_tokens:.2f}k > {args.max_k_tokens_per_batch}k")
-                # 调整batch大小
-                max_bsz = int(args.max_k_tokens_per_batch * 1024 / (1500 + text_input_ids.shape[1]))
-                max_bsz = max(1, max_bsz)  # 至少保留1个样本
-                print(f"调整batch大小为: {max_bsz}")
-                
-                audio_data = audio_data[:max_bsz]
-                text_input_ids = text_input_ids[:max_bsz, :]
-                text_attention_mask = text_attention_mask[:max_bsz, :]
-                labels = labels[:max_bsz, :]
-                labels_attention_mask = labels_attention_mask[:max_bsz, :]
+            if max_bs_size != -1:
+                print(f"current batch audio length is too long,truncate it to {max_bs_size}, kept_audio_seconds: {kept_audio_seconds}")
+                audio_data = audio_data[:max_bs_size]
+                text_input_ids = text_input_ids[:max_bs_size, :]
+                text_attention_mask = text_attention_mask[:max_bs_size, :]
+                labels = labels[:max_bs_size, :]
+                labels_attention_mask = labels_attention_mask[:max_bs_size, :]
+                hints_ids = hints_ids[:max_bs_size, :]
             
             if global_step == 0 and is_main_process:
                 print(f"输入形状: audio_batch_size={len(audio_data)}, text={text_input_ids.shape}, labels={labels.shape}")
@@ -524,7 +521,7 @@ def main():
         except Exception as e:
             if is_main_process:
                 print(f"数据处理失败: {e}")
-                print(f"问题batch: {batch}")
+                print(f"问题batch: {repr(batch)}")
             continue
         try:
             # 移动到设备
