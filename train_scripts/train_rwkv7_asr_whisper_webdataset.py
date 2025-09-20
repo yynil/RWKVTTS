@@ -507,7 +507,7 @@ def main():
             actual_length_of_audio = actual_length_of_audio[-1]
             print(f"audio actual length: {actual_length_of_audio}")
             if max_bs_size != -1:
-                print(f"current batch audio length is too long,truncate it to {max_bs_size}, kept_audio_seconds: {kept_audio_seconds}")
+                print(f"current batch audio length is too long,truncate it to {max_bs_size}, kept_audio_seconds: {kept_audio_seconds} local_rank {global_rank}")
                 audio_data = audio_data[:max_bs_size]
                 text_input_ids = text_input_ids[:max_bs_size, :]
                 text_attention_mask = text_attention_mask[:max_bs_size, :]
