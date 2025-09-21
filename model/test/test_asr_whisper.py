@@ -34,6 +34,8 @@ def generate_single_sample(audio_lm_path, llm_path, ckpt_path, language, device,
         print(f'language: {language}')
         instruction = "User: Convert the audios to English.\n"
         hints = "Assistant: "
+    print(f'instruction: {instruction}')
+    print(f'hints: {hints}')
     instruction_input_ids = tokenizer.encode(instruction)
     hints_input_ids = tokenizer.encode(hints)
     instruction_input_ids = torch.tensor(instruction_input_ids, dtype=torch.long,device=device).unsqueeze(0)
