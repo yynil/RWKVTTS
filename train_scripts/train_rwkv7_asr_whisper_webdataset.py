@@ -577,8 +577,9 @@ def main():
             # 更新进度条
             if is_main_process:
                 progress_bar.update(1)
+            torch.cuda.empty_cache()
         except Exception as e:
-            print(f"问题batch: {batch}")
+            print(f"问题batch: {repr(batch)}")
             print(f"训练失败: {e}")
             print(f'use a dummy batch to recover...')
             torch.cuda.empty_cache()
