@@ -1,66 +1,59 @@
 #Download the evaluation file from:https://drive.google.com/file/d/1GlSjVfSHkW3-leKKBlfrjuuTGqQ_xaLP/edit
 import os
-voice_engine = None
-def init_process_func(model_path,device):
-    global voice_engine
-    from cosyvoice.cli.cosyvoice import CosyVoice2  
-    voice_engine = CosyVoice2(model_path,device=device,fp16=False,load_jit=False)
-    print(f'Finish loading cosyvoice model from {model_path} in process {os.getpid()}')
-def do_tts(ID,tts_text,prompt_text,prompt_audio_file,output_dir):
-    from cosyvoice.utils.file_utils import load_wav
-    import torchaudio
-    global voice_engine
-    try:
-        final_output_file = os.path.join(output_dir,f'{ID}.wav')
-        prompt_speech_16k = load_wav(prompt_audio_file, 16000)
-        for output in voice_engine.inference_zero_shot(tts_text,prompt_text, prompt_speech_16k, stream=False,speed=1):
-            torchaudio.save(final_output_file, output['tts_speech'], voice_engine.sample_rate)
-            break # only save the first output
-        print(f'TTS {tts_text} and Save to {final_output_file} at process {os.getpid()}')
-    except Exception as e:
-        print(f'Error: {e}')
-        print(f'Error processing {ID} at process {os.getpid()}')
-        import traceback
-        traceback.print_exc()
-        return
+
+from eval_tts_base import create_tts_engine
+import gc
+import torch
+
+
+
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval_dir", type=str, default='eval_data/seedtts_testset')
-    parser.add_argument("--language", type=str, default='zh',choices=['zh','en'])
-    parser.add_argument("--model_path", type=str, default='/home/yueyulin/models/CosyVoice2-0.5B_RWKV_1.5B/')
+    parser.add_argument("--language", type=str, default='zh', choices=['zh', 'en'])
+    parser.add_argument("--model_path", type=str, default='/home/yueyulin/models/rwkv7-0.4B-g1-respark-voice-tunable-25k/')
+    parser.add_argument("--audio_tokenizer_path", type=str, default='/home/yueyulin/models/Spark-TTS-0.5B/')
     parser.add_argument("--device", type=str, default='cuda:0')
-    parser.add_argument("--num_processes", type=int, default=2)
-    parser.add_argument("--output_dir", type=str, default='generated')
+    parser.add_argument("--output_dir", type=str, default='eval_results')
     parser.add_argument("--list_file", type=str, default='meta.lst')
-    
-    
     args = parser.parse_args()
     print(args)
-    output_dir = os.path.join(args.eval_dir,args.language,args.output_dir)
-    #first delete the output_dir
-    if os.path.exists(output_dir):
+    output_dir = os.path.join(args.output_dir, args.language)
+    
+    # 首先删除输出目录
+    if os.path.exists(output_dir):  
         import shutil
         shutil.rmtree(output_dir)
     os.makedirs(output_dir)
-    list_file = os.path.join(args.eval_dir,args.language,args.list_file)
+    
+    list_file = os.path.join(args.eval_dir, args.language, args.list_file)
     with open(list_file) as f:
         lines = f.readlines()
     lines = [line.strip() for line in lines]
     print(f'Processing {len(lines)} lines')
     
-    from multiprocessing import Pool
-    from functools import partial
-    import time
-    with Pool(args.num_processes,init_process_func,(args.model_path,args.device)) as p:
-        for line in lines:
-            # 10002287-00000095|在此奉劝大家别乱打美白针。|prompt-wavs/10002287-00000094.wav|简单地说，这相当于惠普把消费领域市场拱手相让了。
-            parts = line.split('|')
-            ID = parts[0]
-            tts_text = parts[3]
-            prompt_text = parts[1]
-            prompt_audio_file = os.path.join(args.eval_dir,args.language,parts[2])
-            p.apply_async(do_tts,(ID,tts_text,prompt_text,prompt_audio_file,output_dir))
-        p.close()
-        p.join()
-    print('All done')
+    # 创建 Respark 引擎实例
+    engine = create_tts_engine(
+        engine_type="respark",
+        device=args.device,
+        model_path=args.model_path,
+        audio_tokenizer_path=args.audio_tokenizer_path,
+        language=args.language
+    )
+    for i, line in enumerate(lines):
+        print(f"处理进度: {i+1}/{len(lines)}")
+        
+        # 10002287-00000095|在此奉劝大家别乱打美白针。|prompt-wavs/10002287-00000094.wav|简单地说，这相当于惠普把消费领域市场拱手相让了。
+        parts = line.split('|')
+        ID = parts[0]
+        tts_text = parts[3]
+        prompt_text = parts[1]
+        prompt_audio_file = os.path.join(args.eval_dir, args.language, parts[2])
+        final_output_file = os.path.join(output_dir, f'{ID}.wav')
+        success = engine.do_tts(tts_text=tts_text, 
+                                prompt_text=prompt_text, 
+                                prompt_audio_file=prompt_audio_file, 
+                                final_output_file=final_output_file)
+        print(f"TTS 操作成功: {final_output_file} and {tts_text} and {prompt_text} and {prompt_audio_file}")

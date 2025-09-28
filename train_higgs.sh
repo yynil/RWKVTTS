@@ -1,0 +1,3 @@
+export PYTHONPATH=`pwd`:`pwd`/third_party
+echo $PYTHONPATH
+deepspeed --num_nodes 1 --num_gpus 4 train_scripts/train_xy_llm_jsonl.py --jsonl_path /external_data/higgs_tokens/higgs_tokens_with_properties_filtered --model_name /home/yueyulin/models/rwkv7-0.1B-g1-higgs/ --output_dir /data/training/rwkv_tts_higgs_0.1b --per_device_train_batch_size 48 --gradient_checkpointing True --ds_stage 2 --learning_rate 3e-4 --learning_rate_final 1e-5 --num_epochs 1 --max_tokens_per_round 80 --save_steps 5000 
