@@ -201,7 +201,8 @@ def inference_asr(models, audio_path, language,dtype,device):
     audio_path = audio_path
     audio_latents,audio_valid_length = extract_audio_latents(models, audio_path,dtype)
     audio_latents = audio_latents.squeeze(0)
-    audio_latents = F.layer_norm(audio_latents, (models.audio_llm.n_embd,), weight=models.audio_llm.z['blocks.0.ln0.weight'], bias=models.audio_llm.z['blocks.0.ln0.bias'])#do the first layer norm for embeddings input
+    with torch.no_grad():
+        audio_latents = F.layer_norm(audio_latents, (models.audio_llm.n_embd,), weight=models.audio_llm.z['blocks.0.ln0.weight'], bias=models.audio_llm.z['blocks.0.ln0.bias'])#do the first layer norm for embeddings input
     audio_latents, _ = forward_seq_with_embeds(models.audio_llm, audio_latents, dtype, device, None, True)
     audio_latents = models.project2_linear(audio_latents)
     audio_latents = audio_latents[:audio_valid_length]
@@ -209,10 +210,12 @@ def inference_asr(models, audio_path, language,dtype,device):
     hints_input_ids = models.tokenizer.encode(hints)
     instruction_input_embeds = models.llm.z['emb.weight'][instruction_input_ids]#first layer norm is done when the embeddings are loaded
     hints_input_embeds = models.llm.z['emb.weight'][hints_input_ids]#first layer norm is done when the embeddings are loaded
-    audio_latents = F.layer_norm(audio_latents, (models.llm.n_embd,), weight=models.llm.z['blocks.0.ln0.weight'], bias=models.llm.z['blocks.0.ln0.bias'])#do the first layer norm for embeddings input
+    with torch.no_grad():
+        audio_latents = F.layer_norm(audio_latents, (models.llm.n_embd,), weight=models.llm.z['blocks.0.ln0.weight'], bias=models.llm.z['blocks.0.ln0.bias'])#do the first layer norm for embeddings input
     whole_input_embeds = torch.cat([instruction_input_embeds, audio_latents, hints_input_embeds], dim=0)
     hidden_states,state = forward_seq_with_embeds(models.llm, whole_input_embeds, dtype, device, None, False)
-    logits = hidden_states @ models.llm.z['head.weight']
+    with torch.no_grad():
+        logits = hidden_states @ models.llm.z['head.weight']
     next_token = sample_logits(logits,top_k=10,top_p=0.95,temperature=1)
     results = []
     results.append(next_token)
@@ -221,7 +224,7 @@ def inference_asr(models, audio_path, language,dtype,device):
         next_token = sample_logits(logits,top_k=10,top_p=0.95,temperature=1)
         if next_token == 0:
             break
-        results.append(next_token)
+        results.append(next_token)ß
     return results
 
 @click.command()
