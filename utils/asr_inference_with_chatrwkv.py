@@ -13,6 +13,7 @@ from transformers import WhisperFeatureExtractor
 from transformers.models.whisper.modeling_whisper import WhisperEncoder
 import numpy as np
 import click
+import time
 @dataclass
 class AsrModels:
     audio_llm: RWKV
@@ -199,7 +200,11 @@ def inference_asr(models, audio_path, language,dtype,device):
     
     print(f'load audio from {audio_path}')
     audio_path = audio_path
+    time_start = time.time()
     audio_latents,audio_valid_length = extract_audio_latents(models, audio_path,dtype)
+    time_end = time.time()
+    print(f'whisper time: {time_end - time_start}')
+    time_start = time.time()
     audio_latents = audio_latents.squeeze(0)
     with torch.no_grad():
         audio_latents = F.layer_norm(audio_latents, (models.audio_llm.n_embd,), weight=models.audio_llm.z['blocks.0.ln0.weight'], bias=models.audio_llm.z['blocks.0.ln0.bias'])#do the first layer norm for embeddings input
@@ -214,6 +219,8 @@ def inference_asr(models, audio_path, language,dtype,device):
         audio_latents = F.layer_norm(audio_latents, (models.llm.n_embd,), weight=models.llm.z['blocks.0.ln0.weight'], bias=models.llm.z['blocks.0.ln0.bias'])#do the first layer norm for embeddings input
     whole_input_embeds = torch.cat([instruction_input_embeds, audio_latents, hints_input_embeds], dim=0)
     hidden_states,state = forward_seq_with_embeds(models.llm, whole_input_embeds, dtype, device, None, False)
+    time_end = time.time()
+    print(f'prefill time: {time_end - time_start}')
     with torch.no_grad():
         logits = hidden_states @ models.llm.z['head.weight']
     next_token = sample_logits(logits,top_k=10,top_p=0.95,temperature=1)
@@ -263,9 +270,12 @@ def main(audio_lm_path, llm_path, whisper_path, audio_path, tokenizer_path, lang
     print(f'llm: {models.llm}')
     print(f'project1: {models.project1_linear}')
     print(f'project2: {models.project2_linear}')
+    start_time = time.time()
     results = inference_asr(models, audio_path, language, dtype, device)
     print(f'results: {results}')
     print(f'decode results: {models.tokenizer.decode(results)}')
+    end_time = time.time()
+    print(f'time: {end_time - start_time}')
     return results
 
 if __name__ == "__main__":
