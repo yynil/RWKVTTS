@@ -224,7 +224,7 @@ def inference_asr(models, audio_path, language,dtype,device):
         next_token = sample_logits(logits,top_k=10,top_p=0.95,temperature=1)
         if next_token == 0:
             break
-        results.append(next_token)ß
+        results.append(next_token)
     return results
 
 @click.command()
