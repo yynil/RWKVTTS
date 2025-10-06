@@ -1,0 +1,8 @@
+gradio>=5.0.0
+torch>=2.0.0
+soundfile>=0.12.1
+librosa>=0.10.0
+click>=8.0.0
+numpy>=1.24.0
+transformers>=4.30.0
+rwkv>=0.8.0
