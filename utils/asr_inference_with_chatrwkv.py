@@ -15,6 +15,9 @@ import numpy as np
 import click
 import time
 import copy
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
 @dataclass
 class AsrModels:
     audio_llm: RWKV
@@ -24,6 +27,7 @@ class AsrModels:
     project2_linear: torch.nn.Linear
     llm: RWKV
     tokenizer: TRIE_TOKENIZER
+    thread_pool: ThreadPoolExecutor
 
 
 def forward_one_with_embeds(model :RWKV,embeds:torch.Tensor,state:List[torch.Tensor]):
@@ -107,6 +111,9 @@ def load_asr_models(audio_lm_path, llm_path,whisper_path,tokenizer_path,device,d
     project2_linear = torch.nn.Linear(project2['weight'].shape[1], project2['weight'].shape[0])
     project2_linear.load_state_dict(project2)
     tokenizer = TRIE_TOKENIZER(tokenizer_path)
+    # 创建常驻线程池，固定3个线程
+    thread_pool = ThreadPoolExecutor(thread_name_prefix="ASR-Inference")
+    
     return AsrModels(
         audio_llm=audio_llm,
         whisper_feature_extractor=whisper_feature_extractor,
@@ -115,6 +122,7 @@ def load_asr_models(audio_lm_path, llm_path,whisper_path,tokenizer_path,device,d
         project2_linear=project2_linear.to(device=device,dtype=dtype),
         llm=llm,
         tokenizer=tokenizer,
+        thread_pool=thread_pool,
     )
 
 def calculate_perplexity(models, generated_tokens, dtype, device):
@@ -158,6 +166,46 @@ def calculate_perplexity(models, generated_tokens, dtype, device):
         perplexity = torch.exp(cross_entropy).item()
         
         return perplexity
+
+def single_inference_task(initial_logits, init_state, models, dtype, device, task_id):
+    """
+    单个推理任务，用于并发执行
+    
+    Args:
+        initial_logits: 初始logits
+        init_state: 初始状态
+        models: ASR模型集合
+        dtype: 数据类型
+        device: 设备
+        task_id: 任务ID
+    
+    Returns:
+        tuple: (results, perplexity)
+    """
+    start_time = time.time()
+    print(f"任务 {task_id} 开始执行")
+    
+    # 生成token序列
+    next_token = sample_logits(initial_logits, top_k=10, top_p=0.6, temperature=0.6)
+    results = []
+    results.append(next_token)
+    state = copy.deepcopy(init_state)
+    
+    while len(results) < 1024:
+        logits, state = models.llm.forward([next_token], state)
+        next_token = sample_logits(logits, top_k=10, top_p=0.6, temperature=0.6)
+        results.append(next_token)
+        if next_token == 0:
+            break
+    
+    # 计算生成序列的perplexity
+    print(f"任务 {task_id} 计算生成序列的perplexity，序列长度: {len(results)}")
+    perplexity = calculate_perplexity(models, results, dtype, device)
+    print(f"任务 {task_id} 生成序列的perplexity: {perplexity:.4f}")
+    
+    end_time = time.time()
+    print(f"任务 {task_id} 执行时间: {end_time - start_time}")
+    return results, perplexity
 
 def sample_logits(logits, temperature=1.0, top_p=0.85, top_k=0):
     if temperature == 0:
@@ -231,7 +279,7 @@ def extract_audio_latents(models, audio_file_path,dtype):
     return projected_latents,audio_valid_length
 
 @torch.inference_mode()
-def inference_asr(models, audio_path, language,dtype,device,resample_count = 1):
+def inference_asr(models, audio_path, language, dtype, device, resample_count=1):
     if language == 'chinese':
         print(f'language: {language}')
         instruction = "User: 请将以下语音转写为中文。\n"
@@ -244,7 +292,7 @@ def inference_asr(models, audio_path, language,dtype,device,resample_count = 1):
     print(f'load audio from {audio_path}')
     audio_path = audio_path
     time_start = time.time()
-    audio_latents,audio_valid_length = extract_audio_latents(models, audio_path,dtype)
+    audio_latents, audio_valid_length = extract_audio_latents(models, audio_path, dtype)
     time_end = time.time()
     print(f'whisper time: {time_end - time_start}')
     time_start = time.time()
@@ -261,32 +309,46 @@ def inference_asr(models, audio_path, language,dtype,device,resample_count = 1):
     with torch.no_grad():
         audio_latents = F.layer_norm(audio_latents, (models.llm.n_embd,), weight=models.llm.z['blocks.0.ln0.weight'], bias=models.llm.z['blocks.0.ln0.bias'])#do the first layer norm for embeddings input
     whole_input_embeds = torch.cat([instruction_input_embeds, audio_latents, hints_input_embeds], dim=0)
-    hidden_states,init_state = forward_seq_with_embeds(models.llm, whole_input_embeds, dtype, device, None, False)
+    hidden_states, init_state = forward_seq_with_embeds(models.llm, whole_input_embeds, dtype, device, None, False)
     time_end = time.time()
     print(f'prefill time: {time_end - time_start}')
     with torch.no_grad():
         initial_logits = hidden_states @ models.llm.z['head.weight']
+    
+    # 使用models的常驻ThreadPoolExecutor进行并发推理
+    print(f"开始并发推理")
     scored_results = []
-    for i in range(resample_count):
-        next_token = sample_logits(initial_logits,top_k=10,top_p=0.6,temperature=0.6)
-        results = []
-        results.append(next_token)
-        state = copy.deepcopy(init_state)
-        while len(results) < 1024:
-            logits,state = models.llm.forward([next_token], state)
-            next_token = sample_logits(logits,top_k=10,top_p=0.6,temperature=0.6)
-            results.append(next_token)
-            if next_token == 0:
-                break
-        
-        # 计算生成序列的perplexity
-        print(f"计算生成序列的perplexity，序列长度: {len(results)}")
-        perplexity = calculate_perplexity(models, results, dtype, device)
-        print(f"生成序列的perplexity: {perplexity:.4f}")
-        scored_results.append((results, perplexity))
+    
+    # 提交所有任务到常驻线程池
+    future_to_task = {
+        models.thread_pool.submit(single_inference_task, initial_logits, init_state, models, dtype, device, i): i 
+        for i in range(resample_count)
+    }
+    
+    # 收集所有结果
+    for future in future_to_task:
+        try:
+            results, perplexity = future.result()
+            scored_results.append((results, perplexity))
+        except Exception as exc:
+            task_id = future_to_task[future]
+            print(f'任务 {task_id} 产生异常: {exc}')
+    
     print(f'scored_results: {scored_results}')
     results, perplexity = min(scored_results, key=lambda x: x[1])
     return results[:-1], perplexity
+
+def cleanup_models(models):
+    """
+    清理models资源，关闭线程池
+    
+    Args:
+        models: AsrModels实例
+    """
+    if hasattr(models, 'thread_pool') and models.thread_pool:
+        print("正在关闭线程池...")
+        models.thread_pool.shutdown(wait=True)
+        print("线程池已关闭")
 
 @click.command()
 @click.option('--audio-lm-path', default="/home/yueyulin/models/rwkv7_0.1b_audio_lm_latents_1.5b_44k", 
@@ -325,13 +387,17 @@ def main(audio_lm_path, llm_path, whisper_path, audio_path, tokenizer_path, lang
     print(f'project1: {models.project1_linear}')
     print(f'project2: {models.project2_linear}')
     start_time = time.time()
-    results, perplexity = inference_asr(models, audio_path, language, dtype, device, resample_count=3)
-    print(f'results: {results}')
-    print(f'decode results: {models.tokenizer.decode(results)}')
-    print(f'perplexity: {perplexity:.4f}')
-    end_time = time.time()
-    print(f'time: {end_time - start_time}')
-    return results, perplexity
+    try:
+        results, perplexity = inference_asr(models, audio_path, language, dtype, device, resample_count=3)
+        print(f'results: {results}')
+        print(f'decode results: {models.tokenizer.decode(results)}')
+        print(f'perplexity: {perplexity:.4f}')
+        end_time = time.time()
+        print(f'time: {end_time - start_time}')
+        return results, perplexity
+    finally:
+        # 确保在程序结束时清理线程池
+        cleanup_models(models)
 
 if __name__ == "__main__":
     main()
