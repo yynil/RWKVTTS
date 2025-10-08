@@ -2,8 +2,8 @@
 #include <assert.h>
 #include "ATen/ATen.h"
 
-// typedef at::Half dtype;
-typedef at::BFloat16 dtype;
+typedef at::Half dtype;
+// typedef at::BFloat16 dtype;
 
 template <typename F>
 __global__ void kernel_forward(const int B, const int T, const int C, const int H,
