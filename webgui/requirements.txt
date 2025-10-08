@@ -1,0 +1,11 @@
+gradio
+torch
+torchaudio
+soundfile
+librosa
+click
+numpy
+transformers
+rwkv
+silero_vad
+rwkv-fla
