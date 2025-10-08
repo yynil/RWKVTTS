@@ -342,7 +342,7 @@ class Gradio5ASR:
             print(f"开始处理音频: {processed_audio_path}, 语言: {language}")
             start_time = time.time()
             
-            results = inference_asr(self.models, processed_audio_path, language, self.torch_dtype, self.device)
+            results, perplexity = inference_asr(self.models, processed_audio_path, language, self.torch_dtype, self.device, resample_count=3)
             decoded_text = self.models.tokenizer.decode(results)
             
             end_time = time.time()
@@ -350,7 +350,7 @@ class Gradio5ASR:
             
             vad_info = "\n\n(VAD修剪已启用)" if use_vad else ""
             print(f"识别完成，耗时: {processing_time:.2f}秒")
-            return f"识别结果: {decoded_text}\n\n处理时间: {processing_time:.2f}秒{vad_info}"
+            return f"识别结果: {decoded_text}\n\n处理时间: {processing_time:.2f}秒{vad_info} perplexity: {perplexity:.4f}"
             
         except Exception as e:
             error_msg = f"识别失败: {str(e)}"

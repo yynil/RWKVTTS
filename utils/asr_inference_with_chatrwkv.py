@@ -14,6 +14,7 @@ from transformers.models.whisper.modeling_whisper import WhisperEncoder
 import numpy as np
 import click
 import time
+import copy
 @dataclass
 class AsrModels:
     audio_llm: RWKV
@@ -116,6 +117,48 @@ def load_asr_models(audio_lm_path, llm_path,whisper_path,tokenizer_path,device,d
         tokenizer=tokenizer,
     )
 
+def calculate_perplexity(models, generated_tokens, dtype, device):
+    """
+    计算生成序列的 perplexity
+    
+    Args:
+        models: ASR模型集合
+        generated_tokens: 生成的token序列 (int数组)
+        dtype: 数据类型
+        device: 设备
+    
+    Returns:
+        perplexity: 困惑度值
+    """
+    with torch.no_grad():
+        # 将生成的tokens转换为embeddings
+        generated_embeds = models.llm.z['emb.weight'][generated_tokens]
+        
+        # 使用LLM模型进行前向传播，获取所有位置的logits
+        hidden_states, _ = forward_seq_with_embeds(models.llm, generated_embeds, dtype, device, None, True)
+        
+        # 计算logits
+        logits = hidden_states @ models.llm.z['head.weight']
+        
+        # Left shift: 输入序列左移一位作为labels
+        # 输入: [token1, token2, token3, token4]
+        # 预测: [token2, token3, token4, token5]
+        # 所以 logits[:-1] 预测 labels[1:]
+        input_logits = logits[:-1]  # 去掉最后一个位置
+        target_labels = generated_tokens[1:]  # 去掉第一个token
+        
+        # 计算交叉熵损失
+        cross_entropy = F.cross_entropy(
+            input_logits.view(-1, input_logits.size(-1)), 
+            torch.tensor(target_labels, device=device).view(-1),
+            reduction='mean'
+        )
+        
+        # 计算perplexity = exp(平均交叉熵)
+        perplexity = torch.exp(cross_entropy).item()
+        
+        return perplexity
+
 def sample_logits(logits, temperature=1.0, top_p=0.85, top_k=0):
     if temperature == 0:
         temperature = 1.0
@@ -188,7 +231,7 @@ def extract_audio_latents(models, audio_file_path,dtype):
     return projected_latents,audio_valid_length
 
 @torch.inference_mode()
-def inference_asr(models, audio_path, language,dtype,device):
+def inference_asr(models, audio_path, language,dtype,device,resample_count = 1):
     if language == 'chinese':
         print(f'language: {language}')
         instruction = "User: 请将以下语音转写为中文。\n"
@@ -218,21 +261,32 @@ def inference_asr(models, audio_path, language,dtype,device):
     with torch.no_grad():
         audio_latents = F.layer_norm(audio_latents, (models.llm.n_embd,), weight=models.llm.z['blocks.0.ln0.weight'], bias=models.llm.z['blocks.0.ln0.bias'])#do the first layer norm for embeddings input
     whole_input_embeds = torch.cat([instruction_input_embeds, audio_latents, hints_input_embeds], dim=0)
-    hidden_states,state = forward_seq_with_embeds(models.llm, whole_input_embeds, dtype, device, None, False)
+    hidden_states,init_state = forward_seq_with_embeds(models.llm, whole_input_embeds, dtype, device, None, False)
     time_end = time.time()
     print(f'prefill time: {time_end - time_start}')
     with torch.no_grad():
-        logits = hidden_states @ models.llm.z['head.weight']
-    next_token = sample_logits(logits,top_k=10,top_p=0.95,temperature=1)
-    results = []
-    results.append(next_token)
-    while len(results) < 1024:
-        logits,state = models.llm.forward([next_token], state)
-        next_token = sample_logits(logits,top_k=10,top_p=0.95,temperature=1)
-        if next_token == 0:
-            break
+        initial_logits = hidden_states @ models.llm.z['head.weight']
+    scored_results = []
+    for i in range(resample_count):
+        next_token = sample_logits(initial_logits,top_k=10,top_p=0.6,temperature=0.6)
+        results = []
         results.append(next_token)
-    return results
+        state = copy.deepcopy(init_state)
+        while len(results) < 1024:
+            logits,state = models.llm.forward([next_token], state)
+            next_token = sample_logits(logits,top_k=10,top_p=0.6,temperature=0.6)
+            results.append(next_token)
+            if next_token == 0:
+                break
+        
+        # 计算生成序列的perplexity
+        print(f"计算生成序列的perplexity，序列长度: {len(results)}")
+        perplexity = calculate_perplexity(models, results, dtype, device)
+        print(f"生成序列的perplexity: {perplexity:.4f}")
+        scored_results.append((results, perplexity))
+    print(f'scored_results: {scored_results}')
+    results, perplexity = min(scored_results, key=lambda x: x[1])
+    return results[:-1], perplexity
 
 @click.command()
 @click.option('--audio-lm-path', default="/home/yueyulin/models/rwkv7_0.1b_audio_lm_latents_1.5b_44k", 
@@ -271,12 +325,13 @@ def main(audio_lm_path, llm_path, whisper_path, audio_path, tokenizer_path, lang
     print(f'project1: {models.project1_linear}')
     print(f'project2: {models.project2_linear}')
     start_time = time.time()
-    results = inference_asr(models, audio_path, language, dtype, device)
+    results, perplexity = inference_asr(models, audio_path, language, dtype, device, resample_count=3)
     print(f'results: {results}')
     print(f'decode results: {models.tokenizer.decode(results)}')
+    print(f'perplexity: {perplexity:.4f}')
     end_time = time.time()
     print(f'time: {end_time - start_time}')
-    return results
+    return results, perplexity
 
 if __name__ == "__main__":
     main()
